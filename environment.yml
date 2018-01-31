@@ -1,0 +1,13 @@
+name: ted
+channels:
+- conda-forge
+- defaults
+dependencies:
+  - numpy
+  - scipy
+  - matplotlib
+  - pandas
+  - ipython
+  - jupyter
+
+
