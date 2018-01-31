@@ -2,7 +2,7 @@
   {
     "name": "ted",
     "organization": "U.S. Geological Survey",
-    "description": "Twitter Earthquake Detector",
+    "description": "Tweet Earthquake Detector",
     "version": "0.1",
     "status": "pre-release",
 

@@ -1,2 +1,2 @@
 # ted
-Twitter Earthquake Detector source code repository
+Tweet Earthquake Detector source code repository
