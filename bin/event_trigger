@@ -1,0 +1,275 @@
+#!/usr/bin/env python
+
+from argparse import ArgumentParser
+import os.path
+import datetime
+import sys
+import configparser
+import sqlite3
+import warnings
+import socket
+import time
+import urllib.request
+import urllib.parse
+import urllib.error
+#import json
+from ted.trigger_funcs import get_region_name
+
+"""
+event_trigger.py - An application for generating TED messages.
+This application presumes that it will be called by the Product Distribution Product Indexer.
+To get help for this application, type "trigger.py --help" or "trigger.py" with no arguments.
+"""
+
+def print_event(eventdict):
+    """
+    Substitute function for postEvent (to be used for offline testing).
+    eventdict: Event dictionary with the following fields, all containing STRINGS:
+               - type Message type (usually 'add')
+               - id Event id
+               - source Event source ('us', 'ci', etc.)
+               - time Event time (20110415173724.011)
+               - lon Event longitude
+               - lat Event latitude
+               - depth Event depth
+               - mag Event magnitude
+               - loc Event location (FE Region?)
+               - uri Event location on USGS NEIC web site.
+    Returns a tuple of (boolean, errormsg).
+    """
+    fmt = '%s %s %s M%s (%s, %s) %s km "%s"'
+    type = eventdict['type']
+    eid = eventdict['id']
+    time = eventdict['time']
+    mag = eventdict['mag']
+    lat = eventdict['lat']
+    lon = eventdict['lon']
+    depth = eventdict['depth']
+    loc = eventdict['loc']
+    print(fmt % (type, eid, time, mag, lat, lon, depth, loc))
+    return (True, '')
+
+def post_event(e):
+    """
+    postEvent: Send earthquake information to Twitter Web API
+    e: Event dictionary with the following fields, all containing STRINGS:
+               - type Message type (usually 'add')
+               - id Event id
+               - source Event source ('us', 'ci', etc.)
+               - time Event time (20110415173724.011)
+               - lon Event longitude
+               - lat Event latitude
+               - depth Event depth
+               - mag Event magnitude
+               - loc Event location (FE Region?)
+               - uri Event location on USGS NEIC web site.
+    Returns a tuple of (boolean, errormsg).
+    """
+    e['loc'] = e['loc'].replace(' ', '%20')
+    
+    values = [('msgType', e['type']), ('eventId', e['id']), ('networkCode', e['source']),
+              ('eventTime', e['time']), ('longitude', e['lon']), ('latitude', e['lat']),
+              ('depth', event['depth']), ('magnitude', e['mag']), ('regionName', e['loc']),
+              ('uri', e['uri'])]
+    url = e['server'] + '/ted/event?' + urllib.parse.urlencode(values)
+    try:
+        t1 = datetime.datetime.now()
+        fh=urllib.request.urlopen(url)
+        msg = fh.read()
+        fh.close()
+        t2 = datetime.datetime.now()
+        td = t2-t1
+    except urllib.error.URLError as msg:
+        return (False, msg, 0)
+    return (True, msg, td.seconds)
+
+def main(options):
+    if options['action'] not in ['EVENT_ADDED', 'EVENT_UPDATED']:
+        f.write('%s: Ignoring all actions but "EVENT_ADDED" and "EVENT_UPDATED".  Exiting.\n' % str(tnow))
+        processeddb.close()
+        f.close()
+        sys.exit(0)
+
+    if options['source'].lower() in ignoreregions:
+        f.write('%s: Ignoring region "%s".  Exiting.\n' % (str(tnow), options['source'].lower()))
+        processeddb.close()
+        f.close()
+        sys.exit(0)
+
+    if options['code'] != options['preferredID']:
+        f.write('%s: Ignoring non-preferred ID "%s".  Exiting.\n' % (str(tnow), options['code']))
+        processeddb.close()
+        f.close()
+        sys.exit(0)
+
+    eventdatetime = datetime.datetime.strptime(options['preferredEventTime'], '%Y-%m-%dT%H:%M:%S.%fZ')
+
+    eventdict = {}
+    eventdict['type'] = 'add'
+    eventdict['id'] = options['preferredID'].lower()
+    eventdict['source'] = options['source'].lower()
+    eventdict['time'] = eventdatetime.strftime('%Y%m%d%H%M%S.00')
+    eventdict['lat'] = '%.4f' % float(options['preferredLatitude'])
+    eventdict['lon'] = '%.4f' % float(options['preferredLongitude'])
+    eventdict['depth'] = '%.1f' % float(options['preferredDepth'])
+    eventdict['mag'] = '%.1f' % float(options['preferredMagnitude'])
+    eventdict['loc'] = get_region_name(float(options['preferredLatitude']), float(options['preferredLongitude']))
+    urlt = config.get('SETUP', 'urltemplate')
+    eventdict['uri'] = urlt.replace('[EVENT]', options['preferredID'].lower())
+
+    if socket.gethostname().find(devhost) > -1 or socket.gethostname().find(testhost) > -1:
+        eventdict['server'] = devserver
+    else:
+        eventdict['server'] = prodserver
+
+    res, msg, nseconds = post_event(eventdict)
+
+    if not res:
+        tnow = datetime.datetime.now()
+        errmsg = '%s: Tweet for event %s failed with message: "%s". Exiting.' % (tnow, eventdict['id'], msg)
+        if loggingOn:
+            f.write(errmsg+'\n')
+        print(errmsg)
+        f.close()
+        processeddb.close()
+        sys.exit(1)
+    else:
+        tnow = datetime.datetime.now()
+        successmsg = '%s: Tweeter responded for event %s in %i seconds with message "%s"' % (tnow, eventdict['id'], nseconds, msg)
+        if loggingOn:
+            f.write(successmsg+'\n')
+        print(successmsg)
+
+    processeddb.close()
+    f.close()
+    sys.exit(0)
+
+if __name__ == '__main__':
+    parser = ArgumentParser(prog='triggerEventMatch', usage='%(prog)s [options]')
+
+    # Product Indexer command line API options
+    parser.add_argument("--directory", dest="directory",
+                      help="""Optional. <directory> is a path to a directory that contains product contents. Any directory
+                      hierarchy within <directory> is preserved.""", metavar="DIRECTORY")
+    
+    parser.add_argument("--type", dest="type",
+                      help="""Product TYPE. A short identifier that is shared by all sources of a type of product.
+                      Examples include origin, shakemap, pager, etc. """, metavar="TYPE")
+    
+    parser.add_argument("--code", dest="code",
+                      help="""Event CODE: 2 character source code plus 8 character network event code.
+                      Examples include us2009abcd and ci12345678""", metavar="CODE")
+    
+    parser.add_argument("--source", dest="source",
+                      help="""Network SOURCE that generated this product, as a two character network code.
+                      Examples include us, nc, and ci.""", metavar="SOURCE")
+    
+    parser.add_argument("--updateTime", dest="updateTime",
+                      help="""Optional. Default is now. When this version of source+type+code was updated.
+                      An example is 2010-01-14T14:11:28.691-07:00.""", metavar="UPDATETIME")
+    
+    parser.add_argument("--status", dest="status",
+                      help="""Optional. Default is UPDATE. Product generators may use any status without spaces.
+                      However, the status must be used consistently for all products of that type.
+                      Examples include UPDATE, and DELETE.""", metavar="STATUS")
+    
+    parser.add_argument("--trackerURL", dest="trackerURL",
+                      help="A location where tracking updates are sent.", metavar="TRACKERURL")
+
+    parser.add_argument("--action", dest="action",
+                      help="""ACTION is one of: EVENT_ADDED,EVENT_SPLIT,EVENT_UPDATED,EVENT_DELETED,EVENT_MERGED,EVENT_ARCHIVED
+                      PRODUCT_ADDED,PRODUCT_UPDATED,PRODUCT_DELETED,PRODUCT_ARCHIVED""", metavar="ACTION")
+    
+    parser.add_argument("--preferred-eventid", dest="preferredID",
+                      help="""The full (source+code) preferred event ID for this event.""", metavar="PREFERREDID")
+    
+    parser.add_argument("--eventids", dest="eventIDList",
+                      help="""All of the associated event IDs for this event.""", metavar="EVENTIDS")
+    
+    parser.add_argument("--preferred-magnitude", dest="preferredMagnitude",
+                      help="""The preferred magnitude for this event.""", metavar="PREFERREDMAG")
+    
+    parser.add_argument("--preferred-latitude", dest="preferredLatitude",
+                      help="""The preferred latitude for this event.""", metavar="PREFERREDLAT")
+    
+    parser.add_argument("--preferred-longitude", dest="preferredLongitude",
+                      help="""The preferred longitude for this event.""", metavar="PREFERREDLON")
+    
+    parser.add_argument("--preferred-depth", dest="preferredDepth",
+                      help="""The preferred depth for this event.""", metavar="PREFERREDDEPTH")
+    
+    parser.add_argument("--preferred-eventtime", dest="preferredEventTime",
+                      help="""The preferred event time (2010-01-14T14:11:28.691Z).""", metavar="PREFERREDDEPTH")
+    
+
+
+    # Filter out any options that are not in the above list
+    # Get the list of defined options
+    options = {}
+    validargs, invalidargs = parser.parse_known_args()
+    options = vars(validargs)
+    
+    # Print help menu and exit if none of options are defined
+    foundOne = False
+    for argvalue in options.values():
+        if argvalue != None:
+             foundOne = True
+             break
+    if not foundOne:
+        parser.print_help()
+        sys.exit(0)
+
+    # Read in config file
+    homedir = os.path.dirname(os.path.abspath(__file__))
+    configfile = os.path.join(homedir, 'config.ini')
+    if not os.path.isfile(configfile):
+        print('File "%s" does not exist.  Exiting' % configfile)
+        sys.exit(1)
+
+
+    dbfile = os.path.join(homedir, 'already_processed.db')
+    processeddb = sqlite3.connect(dbfile)
+    c = processeddb.cursor()
+
+    # if os.path.exists('already_processed.db'):
+        # do something
+    # else:
+        # create db file
+
+    config = configparser.ConfigParser()
+    config.readfp(open(configfile))
+
+    if not config.has_section('SETUP'):
+        print('Config file "%s" is missing section "SETUP".  Exiting' % configfile)
+        processeddb.close()
+        sys.exit(1)
+
+    reqoptions = ['magthresh', 'ignoreregions', 'devtweetserver', 'prodtweetserver',
+                  'urltemplate', 'development_hostname', 'test_hostname', 'production_hostname',
+                  'logging_on', 'logfile']
+    missing = []
+    for option in reqoptions:
+        if not config.has_option('SETUP', option):
+            missing.append(option)
+    if len(missing):
+        print('Config file "%s" is missing SETUP options "%s".  Exiting' % (configfile, ','.join(missing)))
+        processeddb.close()
+        sys.exit(1)
+
+    magthresh = float(config.get('SETUP', 'magthresh'))
+    ignoreregions = config.get('SETUP', 'ignoreregions').split(',')
+    devserver = config.get('SETUP', 'devtweetserver')
+    prodserver = config.get('SETUP', 'prodtweetserver')
+    devhost = config.get('SETUP', 'development_hostname')
+    testhost = config.get('SETUP', 'test_hostname')
+    prodhost = config.get('SETUP', 'production_hostname')
+    loggingOn = bool(int(config.get('SETUP', 'logging_on')))
+    logfile = os.path.join(homedir, config.get('SETUP', 'logfile'))
+
+    # Set up log file
+    if loggingOn:
+        f = open(logfile, 'at')
+
+    tnow = datetime.datetime.now() # For use in log file
+
+    main(options)    
