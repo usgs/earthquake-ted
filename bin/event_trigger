@@ -125,7 +125,6 @@ def main(options):
     res, msg, nseconds = post_event(eventdict)
 
     if not res:
-        tnow = datetime.datetime.now()
         errmsg = '%s: Tweet for event %s failed with message: "%s". Exiting.' % (tnow, eventdict['id'], msg)
         if loggingOn:
             f.write(errmsg+'\n')
@@ -134,7 +133,6 @@ def main(options):
         processeddb.close()
         sys.exit(1)
     else:
-        tnow = datetime.datetime.now()
         successmsg = '%s: Tweeter responded for event %s in %i seconds with message "%s"' % (tnow, eventdict['id'], nseconds, msg)
         if loggingOn:
             f.write(successmsg+'\n')
