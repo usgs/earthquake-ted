@@ -1,0 +1,479 @@
+#!/usr/bin/env python
+
+from argparse import ArgumentParser
+import os.path
+import datetime
+import sys
+import configparser
+import sqlite3
+import warnings
+import socket
+import time
+import urllib.request
+import urllib.parse
+import urllib.error
+import json
+import psycopg2
+import twitter
+
+"""
+tweet_trigger.py - An application for tweeting new earthquake events.
+This application presumes that it will be called by the Product Distribution Product Indexer.
+"""
+def get_region_name(lat, lon):
+    """
+    Return the short version of the FE region name from GeoServe. If GeoServe does not return
+    anything, return a modified latitude/longitude pair in the form 0.0 N/S, 0.0 E/W.
+    lat: Latitude of input point.
+    lat: Latitude of input point.
+    Returns short form of the Flinn-Engdahl region name.
+    """
+    url = config.get('SETUP', 'geoserve_urltemplate')
+    url = url.replace('[LAT]', str(lat))
+    url = url.replace('[LON]', str(lon))
+
+    try:
+        fh = urllib.request.urlopen(url)
+        regstr = fh.read().decode("utf-8")
+        fh.close()
+        jdict = json.loads(regstr)
+        locstr = jdict['fe']['features'][0]['properties']['name']
+    except Exception as e:
+        ns = 'N'
+        ew = 'E'
+        if lat <= 0.0:
+            ns = 'S'
+        if lon <= 0.0:
+            ew = 'W'
+        locstr = '%.f %s, %.f %s' % (lat, ns, lon, ew)
+        f.write("%s: GeoServe returned an error. Returning location string %s instead of " + \
+                "region name.\n" % (tnow, locstr))
+    return locstr
+
+def check_event(eventdict):
+    """
+    Check that event should be tweeted. 
+    eventdict: Event dictionary with the following fields, all containing STRINGS:
+               - type: Message type (usually 'add')
+               - id: Event id
+               - source: Event source ('us', 'ci', etc.)
+               - time: Event time (20110415173724.011)
+               - lon: Event longitude
+               - lat: Event latitude
+               - depth: Event depth
+               - mag: Event magnitude
+               - loc: Event location (FE Region)
+               - uri: Event location on USGS NEIC web site.
+    Returns a boolean.
+    """
+    eid = eventdict['id']
+    etime = eventdict['time']
+    mag = eventdict['mag']
+    lat = eventdict['lat']
+    lon = eventdict['lon']
+    loc = eventdict['loc']
+ 
+    # Check 0: event magnitude greater than magnitude threshold
+    magthresh = float(config.get('SETUP', 'magthresh'))
+
+    if float(mag) < magthresh:
+        f.write("%s: Ignoring event %s with magnitude %s less than threshold %s. Exiting.\n" 
+                % (str(tnow), eid, mag, str(magthresh)))
+        return False
+
+    # Check 1: event is not too old
+    timethresh = int(config.get('SETUP', 'timethresh'))
+    eventdt = datetime.datetime.strptime(str(etime), '%Y%m%d%H%M%S.%f')
+    mineventdt = utcnow - datetime.timedelta(minutes=timethresh)
+
+    if (eventdt < mineventdt):
+        f.write("%s: Ignoring event %s because its timestamp %s is older than minimum " + \
+                "tweetable time %s. Exiting.\n" % (str(tnow, eid, str(etime), 
+                                                   str(mineventdt))))
+        return False
+
+    # Check 2: event is not in the future
+    if (eventdt > utcnow):
+        f.write("%s: Ignoring event %s with future time %s. Exiting.\n" 
+                % (str(tnow), eid, str(etime)))
+        return False
+
+    # Check 3: event has not already been tweeted
+    query = "select event_id from tweet_audit where event_id = '" + eid + "'"
+    longquery = query + " union select NULL where not exists (" + query + ");"
+    cur.execute(longquery)
+    tweetmatch = cur.fetchone()[0]
+
+    if tweetmatch is not None:
+        f.write("%s: Ignoring already tweeted event %s. Exiting.\n" % (str(tnow), eid))
+        return False
+
+    # Check 4: tweet has not already been sent for another event which is 
+    # close in time and space to this event
+    tooclosedistance = config.get('SETUP', 'tooclosedistance')
+    toooldtime = config.get('SETUP', 'toooldtime')
+    latlondiff = format((int(tooclosedistance)/111), '.1f')
+    eventtime = etime[:8] + 'T' + etime[8:]
+
+    query = ("select event_id from tweet_audit where (event_time <= (timestamp'{0}' + interval "
+             "'{1}' minute) and event_time >= (timestamp'{2}' - interval '{3}' minute)) and " 
+             "abs(event_lat - {4}) <= {5} and abs(event_lon - {6}) <= {7}")
+    query = query.format(eventtime, toooldtime, eventtime, toooldtime, lat, str(latlondiff), 
+                         lon, str(latlondiff))
+    longquery = query + " union select NULL where not exists (" + query + ");"
+    cur.execute(longquery)
+    tweetmatch = cur.fetchone()[0]
+
+    if tweetmatch is not None:
+        f.write("%s: Ignoring event '%s', close in time and location to already tweeted " + \
+                "event %s. Exiting.\n" % (str(tnow), eid, tweetmatch))
+        return False
+
+    return True
+
+def get_short_url(eventdict):
+    """
+    Shorten url to event page (on earthquake.usgs.gov) for tweets using Go.USA.gov API.
+    eventdict: Event dictionary with the following fields, all containing STRINGS:
+               - type: Message type (usually 'add')
+               - id: Event id
+               - source: Event source ('us', 'ci', etc.)
+               - time: Event time (20110415173724.011)
+               - lon: Event longitude
+               - lat: Event latitude
+               - depth: Event depth
+               - mag: Event magnitude
+               - loc: Event location (FE Region)
+               - uri: Event location on USGS NEIC web site.
+    Returns url string. If an error is encountered, this will return the unshortened url.
+    """
+    bitlyusername = config.get('BITLY', 'bitly_username')
+    bitlyapikey = config.get('BITLY', 'bitly_apikey')
+    longurl = eventdict['uri'].replace('://','%3A%2F%2F')
+    longurl = longurl.replace('/','%2F')
+
+    # Get url to connect to go.usa.gov api
+    http = config.get('SETUP', 'short_urltemplate')
+    http = http.replace('[LOGIN]', bitlyusername)
+    http = http.replace('[KEY]', bitlyapikey)
+    http = http.replace('[LONGURL]', longurl)
+
+    # Connect to go.usa.gov api
+    shorturl = eventdict['uri']
+    try:
+        fh = urllib.request.urlopen(http)
+        regstr = fh.read().decode('utf-8')
+        fh.close()
+        jdict = json.loads(regstr)
+        statuscode = jdict['response']['0'][0]['status_code']
+
+        if statuscode == '200':
+            shorturl = jdict['response']['data']['entry'][0]['short_url']
+        else:
+            pass
+            f.write("%s: Go.usa.gov returned an error while shortening url for event " + \
+                    "%s: %s\n" % (str(tnow), eventdict['id'], e))
+    except Exception as e:
+        f.write("%s: Error encountered while shortening URL for event %s: %s\n"
+                % (str(tnow), eventdict['id'], e))
+        pass
+
+    return shorturl
+
+def add_tweet_to_db(eventdict):
+    """
+    Adds tweeted event to tweet_audit table in database. 
+    eventdict: Event dictionary with the following fields, all containing STRINGS:
+               - type: Message type (usually 'add')
+               - id: Event id
+               - source: Event source ('us', 'ci', etc.)
+               - time: Event time (20110415173724.011)
+               - lon: Event longitude
+               - lat: Event latitude
+               - depth: Event depth
+               - mag: Event magnitude
+               - loc: Event location (FE Region)
+               - uri: Event location on USGS NEIC web site.
+    """
+    eid = eventdict['id']
+    etime = eventdict['time']
+    mag = eventdict['mag']
+    lat = eventdict['lat']
+    lon = eventdict['lon']
+    loc = eventdict['loc']
+    eventtime = etime[:8] + 'T' + etime[8:]
+
+    try:
+        cur.execute("insert into tweet_audit (event_id, event_lat, event_lon, event_time, " + \
+                    "magnitude, tweet_time) values (%s, %s, %s, %s, %s, %s);", (eid, lat, lon,
+                    eventtime, mag, utcnow))
+        f.write("%s: Successfully inserted tweet info for event %s into tweet_audit table.\n"
+                % (str(tnow),str(eid)))
+    except Exception as e:
+        f.write("%s: Failed to insert event dictionary into tweet_audit table. Error %s\n"
+                % (str(tnow),str(e)))
+
+def tweet_event(eventdict):
+    """
+    Tweet out earthquake information through Twitter Web API. 
+    eventdict: Event dictionary with the following fields, all containing STRINGS:
+               - type: Message type (usually 'add')
+               - id: Event id
+               - source: Event source ('us', 'ci', etc.)
+               - time: Event time (20110415173724.011)
+               - lon: Event longitude
+               - lat: Event latitude
+               - depth: Event depth
+               - mag: Event magnitude
+               - loc: Event location (FE Region)
+               - uri: Event location on USGS NEIC web site.
+    Returns (boolean, msg, time).
+               -boolean: tweet_event() completed without errors
+               -msg: errormsg if boolean = FALSE, successmsg if boolean = TRUE
+               -time: time to tweet event after tweet_event() was called
+    """
+    try:
+        t1 = datetime.datetime.now()
+        # Check that event is okay to be tweeted, if not exit
+        eventpassed = check_event(eventdict)
+        if not eventpassed:
+            return(False,"Event did not pass checks.",0)
+
+        eid = eventdict['id']
+        etime = eventdict['time']
+        mag = eventdict['mag']
+        lat = eventdict['lat']
+        lon = eventdict['lon']
+        loc = eventdict['loc']
+
+        # Get short URL used in tweet string
+        shorturl = get_short_url(eventdict)
+
+        # Connect to Twitter API and tweet event information
+        twitterapikey = config.get('TWITTER', 'twitter_apikey')
+        apisecret = config.get('TWITTER', 'twitter_apisecret')
+        accesstoken = config.get('TWITTER', 'twitter_accesstoken')
+        secrettoken = config.get('TWITTER', 'twitter_accesstoken_secret')
+        origindate = eventdatetime.strftime('%b-%d %H:%M UTC')
+
+        # Create string that will be tweeted
+        tweetstring = "Prelim M" + "%s earthquake %s %s, updates %s" % (mag, loc, origindate, shorturl)
+
+        # Connect to twitter API and send tweet
+        api = twitter.Api(consumer_key=twitterapikey,
+                          consumer_secret=apisecret,
+                          access_token_key=accesstoken,
+                          access_token_secret=secrettoken)
+        status = api.PostUpdate(tweetstring)
+        f.write("%s: Tweeting event %s - %s\n" % (str(tnow), eid, tweetstring))
+        
+        # Calculate time it took to tweet event
+        t2 =  datetime.datetime.now()
+        td=t2-t1
+    except Exception as e:
+        return(False,e,0)
+
+    add_tweet_to_db(eventdict)
+
+    return(True,tweetstring,td)
+
+def close_both():
+    """
+    Close database connection and logfile.
+    """
+    cur.close()
+    conn.close()
+    f.close()
+
+def call_tweeter(options):
+    """
+    Called by __main__. Creates event dictionary and calls tweet_event(). 
+    options: Dictionary with the following fields, all containing STRINGS:
+             - status: Event status (default is 'UPDATE')
+             - preferredmagnitude: Prefered event magnitude
+             - preferredLongitude: Preferred event longitude
+             - preferredLatitude: Preferred event latitude
+             - code: Event code
+             - action: Action to take with event
+             - eventIDList: All associated event IDs for event
+             - preferredEventTime: Preferred event time
+             - source: Network that generated product
+             - preferredDepth: Preferred event depth
+             - updateTime: Time when this version of event was updated
+             - trackerURL: Location where tracking updates are sent 
+             - directory: Path to directory that contains product contents
+             - preferredID: Preferred event ID
+             - type: Event type (should be 'origin')
+    """
+    # If event is not an event add or event update trigger, exit application
+    if options['action'] not in ['EVENT_ADDED', 'EVENT_UPDATED']:
+        f.write("%s: Ignoring all actions but 'EVENT_ADDED' and 'EVENT_UPDATED'.  Exiting.\n" 
+                % str(tnow))
+        close_both()
+        sys.exit(0)
+
+    # If network source is in ignoreregions list, exit application
+    if options['source'].lower() in ignoreregions:
+        f.write("%s: Ignoring region '%s'.  Exiting.\n" % (str(tnow), options['source'].lower()))
+        close_both()
+        sys.exit(0)
+
+    # If event code is not same as preferred event ID, exit application
+    if options['code'] != options['preferredID']:
+        f.write("%s: Ignoring non-preferred ID '%s'.  Exiting.\n" % (str(tnow), options['code']))
+        close_both()
+        sys.exit(0)
+
+    eventdict = {}
+    eventdict['type'] = 'add'
+    eventdict['id'] = options['preferredID'].lower()
+    eventdict['source'] = options['source'].lower()
+    eventdict['time'] = eventdatetime.strftime('%Y%m%d%H%M%S.00')
+    eventdict['lat'] = '%.4f' % float(options['preferredLatitude'])
+    eventdict['lon'] = '%.4f' % float(options['preferredLongitude'])
+    eventdict['depth'] = '%.1f' % float(options['preferredDepth'])
+    eventdict['mag'] = '%.1f' % float(options['preferredMagnitude'])
+    eventdict['loc'] = get_region_name(float(options['preferredLatitude']), float(options['preferredLongitude']))
+    urlt = config.get('SETUP', 'long_urltemplate')
+    eventdict['uri'] = urlt.replace('[EVENT]', options['preferredID'].lower())
+
+    res, msg, nseconds = tweet_event(eventdict)
+
+    if not res:
+        if msg != "Event did not pass checks.":
+            errmsg = "%s: Tweet for event %s failed with message: '%s'. Exiting." % (tnow, eventdict['id'], msg)
+            if loggingon:
+                f.write(errmsg+'\n')
+        close_both()
+        sys.exit(1)
+    else:
+        successmsg = "%s: Tweeter responded for event %s in %i seconds with message '%s'" % (tnow, eventdict['id'], nseconds, msg)
+        if loggingon:
+            f.write(successmsg+'\n')
+        close_both()
+        sys.exit(0)
+
+if __name__ == '__main__':
+    parser = ArgumentParser(prog='triggerTweeter', usage='%(prog)s [options]')
+
+    # Product Indexer command line API options
+    parser.add_argument("--directory", dest="directory",
+                      help="""Optional. <directory> is a path to a directory that contains product contents. Any directory
+                      hierarchy within <directory> is preserved.""", metavar="DIRECTORY")
+    
+    parser.add_argument("--type", dest="type",
+                      help="""Product TYPE. A short identifier that is shared by all sources of a type of product.
+                      Examples include origin, shakemap, pager, etc. """, metavar="TYPE")
+    
+    parser.add_argument("--code", dest="code",
+                      help="""Event CODE: 2 character source code plus 8 character network event code.
+                      Examples include us2009abcd and ci12345678""", metavar="CODE")
+    
+    parser.add_argument("--source", dest="source",
+                      help="""Network SOURCE that generated this product, as a two character network code.
+                      Examples include us, nc, and ci.""", metavar="SOURCE")
+    
+    parser.add_argument("--updateTime", dest="updateTime",
+                      help="""Optional. Default is now. When this version of source+type+code was updated.
+                      An example is 2010-01-14T14:11:28.691-07:00.""", metavar="UPDATETIME")
+    
+    parser.add_argument("--status", dest="status",
+                      help="""Optional. Default is UPDATE. Product generators may use any status without spaces.
+                      However, the status must be used consistently for all products of that type.
+                      Examples include UPDATE, and DELETE.""", metavar="STATUS")
+    
+    parser.add_argument("--trackerURL", dest="trackerURL",
+                      help="A location where tracking updates are sent.", metavar="TRACKERURL")
+
+    parser.add_argument("--action", dest="action",
+                      help="""ACTION is one of: EVENT_ADDED,EVENT_SPLIT,EVENT_UPDATED,EVENT_DELETED,EVENT_MERGED,EVENT_ARCHIVED
+                      PRODUCT_ADDED,PRODUCT_UPDATED,PRODUCT_DELETED,PRODUCT_ARCHIVED""", metavar="ACTION")
+    
+    parser.add_argument("--preferred-eventid", dest="preferredID",
+                      help="""The full (source+code) preferred event ID for this event.""", metavar="PREFERREDID")
+    
+    parser.add_argument("--eventids", dest="eventIDList",
+                      help="""All of the associated event IDs for this event.""", metavar="EVENTIDS")
+    
+    parser.add_argument("--preferred-magnitude", dest="preferredMagnitude",
+                      help="""The preferred magnitude for this event.""", metavar="PREFERREDMAG")
+    
+    parser.add_argument("--preferred-latitude", dest="preferredLatitude",
+                      help="""The preferred latitude for this event.""", metavar="PREFERREDLAT")
+    
+    parser.add_argument("--preferred-longitude", dest="preferredLongitude",
+                      help="""The preferred longitude for this event.""", metavar="PREFERREDLON")
+    
+    parser.add_argument("--preferred-depth", dest="preferredDepth",
+                      help="""The preferred depth for this event.""", metavar="PREFERREDDEPTH")
+    
+    parser.add_argument("--preferred-eventtime", dest="preferredEventTime",
+                      help="""The preferred event time (2010-01-14T14:11:28.691Z).""", metavar="PREFERREDDEPTH")
+    
+
+
+    # Filter out any options that are not in the above list
+    # Get the list of defined options
+    options = {}
+    validargs, invalidargs = parser.parse_known_args()
+    options = vars(validargs)
+    
+    # Print help menu and exit if none of options are defined
+    foundone = False
+    for argvalue in options.values():
+        if argvalue != None:
+             foundone = True
+             break
+    if not foundone:
+        parser.print_help()
+        sys.exit(0)
+
+    # Read in config file
+    homedir = os.path.dirname(os.path.abspath(__file__))
+    configfile = os.path.join(homedir, 'configTweeter.ini')
+    if not os.path.isfile(configfile):
+        print("Config file '%s' does not exist.  Exiting" % configfile)
+        sys.exit(1)
+
+    config = configparser.ConfigParser()
+    config.readfp(open(configfile))
+
+    if not config.has_section('SETUP'):
+        print("Config file '%s' is missing section 'SETUP'.  Exiting" % configfile)
+        sys.exit(1)
+
+    reqoptions = ['magthresh', 'timethresh', 'tooclosedistance', 'toooldtime', 
+                  'ignoreregions', 'long_urltemplate', 'logging_on', 'logfile']
+    missing = []
+    for option in reqoptions:
+        if not config.has_option('SETUP', option):
+            missing.append(option)
+    if len(missing):
+        print("Config file '%s' is missing SETUP options '%s'.  Exiting" % (configfile, ','.join(missing)))
+        sys.exit(1)
+
+    ignoreregions = config.get('SETUP', 'ignoreregions').split(',')
+    loggingon = bool(int(config.get('SETUP', 'logging_on')))
+    logfile = os.path.join(homedir, config.get('SETUP', 'logfile'))
+
+    # Set up log file
+    if loggingon:
+        f = open(logfile, 'at')
+
+    # Connect to database
+    prefix = 'testdb'
+    port = config.get('DATABASE',prefix+'_port')
+    user = config.get('DATABASE',prefix+'_user')
+    dbname = config.get('DATABASE',prefix+'_name')
+    password = config.get('DATABASE',prefix+'_password')
+
+    conn = psycopg2.connect(dbname=dbname, user=user, port=port, password=password)
+    conn.autocommit = True
+    cur = conn.cursor()
+    
+    # Variables used later on
+    tnow = datetime.datetime.now()
+    utcnow = datetime.datetime.utcnow()
+    eventdatetime = datetime.datetime.strptime(options['preferredEventTime'], '%Y-%m-%dT%H:%M:%S.%fZ')
+    
+    call_tweeter(options)    
