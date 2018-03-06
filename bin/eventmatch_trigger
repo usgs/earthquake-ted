@@ -12,34 +12,95 @@ import urllib.error
 import psycopg2
 from ted.trigger_funcs import get_region_name
 """
-trigger.py - An application which adds events to a specified Postgres table.
+eventmatch_trigger.py - An application which adds events to a specified Postgres table.
 This application presumes that it will be called by the Product Distribution Product Indexer.
-To get help for this application, type "trigger.py --help" or "trigger.py" with no arguments.
 """
+def insert_from_dict(dictionary):
+    """
+    Take items from event dictionary and insert into event_ext table in database.
+    dictionary: Event dictionary with the following fields, all containing STRINGS:
+                - type: Message type (usually 'add')
+                - id: Event id
+                - source: Event source ('us', 'ci', etc.)
+                - time: Event time (20110415173724.011)
+                - lon: Event longitude
+                - lat: Event latitude
+                - depth: Event depth
+                - mag: Event magnitude
+                - loc: Event location (FE Region)
+                - uri: Event location on USGS NEIC web site.
+    """
 
-def main(options):
+    # Connect to database
+    prefix = 'eventMatch'
+    port = config.get('DATABASE',prefix+'_port')
+    user = config.get('DATABASE',prefix+'_user')
+    dbname = config.get('DATABASE',prefix+'_name')
+    password = config.get('DATABASE',prefix+'_password')
+
+    conn = psycopg2.connect(dbname=dbname, user=user, port=port, password=password)
+    conn.autocommit = True
+    cur = conn.cursor()
+
+    try:
+        eventtime = dictionary['time'][:8] + 'T' + dictionary['time'][8:]
+        # Add event to database
+        cur.execute("INSERT INTO event_ext (event_time, event_id, event_lat, event_lon," + \
+                    " magnitude) VALUES (%s, %s, %s, %s, %s);", (eventtime, dictionary['id'],
+                    dictionary['lat'], dictionary['lon'], dictionary['mag']))
+        f.write("%s: Successfully inserted dictionary for event %s into event_ext table.\n" %
+                (str(tnow),str(dictionary['id'])))
+    except Exception as e:
+        f.write("%s: Failed to insert event dictionary into event_ext table. Error %s\n" % str(tnow),str(e))
+    finally:
+        cur.close()
+        conn.close()
+
+def call_inserter(options):
+    """
+    Called by __main__. Creates event dictionary and calls insert_from_dict(). 
+    options: Dictionary with the following fields, all containing STRINGS:
+             - status: Event status (default is 'UPDATE')
+             - preferredmagnitude: Prefered event magnitude
+             - preferredLongitude: Preferred event longitude
+             - preferredLatitude: Preferred event latitude
+             - code: Event code
+             - action: Action to take with event
+             - eventIDList: All associated event IDs for event
+             - preferredEventTime: Preferred event time
+             - source: Network that generated product
+             - preferredDepth: Preferred event depth
+             - updateTime: Time when this version of event was updated
+             - trackerURL: Location where tracking updates are sent 
+             - directory: Path to directory that contains product contents
+             - preferredID: Preferred event ID
+             - type: Event type (should be 'origin')
+    """
+    # If event is not an event add or event update trigger, exit application
     if options['action'] not in ['EVENT_ADDED','EVENT_UPDATED']:
         f.write('%s: Ignoring all actions but "EVENT_ADDED" and "EVENT_UPDATED".  Exiting.\n' % str(tnow))
         f.close()
         sys.exit(0)
 
+    # If network source is in ignoreregions list, exit application
     if options['source'].lower() in ignoreregions:
         f.write('%s: Ignoring region "%s".  Exiting.\n' % (str(tnow),options['source'].lower()))
         f.close()
         sys.exit(0)
 
+    # If event code is not same as preferred event ID, exit application
     if options['code'] != options['preferredID']:
         f.write('%s: Ignoring non-preferred ID "%s".  Exiting.\n' % (str(tnow),options['code']))
         f.close()
         sys.exit(0)
 
-    eventdatetime = datetime.datetime.strptime(options['preferredEventTime'],'%Y-%m-%dT%H:%M:%S.%fZ')
+    eventdt = datetime.datetime.strptime(options['preferredEventTime'],'%Y-%m-%dT%H:%M:%S.%fZ')
 
     eventdict = {}
     eventdict['type'] = 'add'
     eventdict['id'] = options['preferredID'].lower()
     eventdict['source'] = options['source'].lower()
-    eventdict['time'] = eventdatetime.strftime('%Y%m%d%H%M%S.00')
+    eventdict['time'] = eventdt.strftime('%Y%m%d%H%M%S.00')
     eventdict['lat'] = '%.4f' % float(options['preferredLatitude'])
     eventdict['lon'] = '%.4f' % float(options['preferredLongitude'])
     eventdict['depth'] = '%.1f' % float(options['preferredDepth'])
@@ -49,40 +110,6 @@ def main(options):
     eventdict['uri'] = urlt.replace('[EVENT]',options['preferredID'].lower())
 
     insert_from_dict(eventdict)
-
-    f.close()
-    sys.exit(0)
-
-def insert_from_dict(dictionary):
-    """
-    Take items from event dictionary and put in database.
-    """
-
-    # Connect to database
-    prefix = 'testDB'
-    port = config.get('DATABASE',prefix+'_port')
-    user = config.get('DATABASE',prefix+'_user')
-    dbname = config.get('DATABASE',prefix+'_name')
-    password = config.get('DATABASE',prefix+'_password')
-    
-    conn = psycopg2.connect(dbname=dbname, user=user, port=port, password=password)
-    conn.autocommit = True
-    cur = conn.cursor()
-
-    try:
-        eventTime = dictionary['time'][:8] + 'T' + dictionary['time'][8:]
-
-        # Add event to database
-        cur.execute("INSERT INTO event_ext (event_time, event_id, event_lat, event_lon," + \
-                    " magnitude) VALUES (%s, %s, %s, %s, %s);", (eventTime, dictionary['id'], 
-                    dictionary['lat'], dictionary['lon'], dictionary['mag']))
-        f.write("%s: Successfully inserted dictionary for event %s into event_ext table.\n" % 
-                (str(tnow),str(dictionary['id'])))
-    except Exception as e:
-        f.write("%s: Failed to insert event dictionary into event_ext table. Error %s\n" % str(tnow),str(e))
-    finally:
-        cur.close()
-        conn.close()       
 
 if __name__ == '__main__':
     parser = ArgumentParser(prog='triggerEventMatch', usage ='%(prog)s [options]')
@@ -193,4 +220,8 @@ if __name__ == '__main__':
         f = open(logfile,'at')
     tnow = datetime.datetime.now() # For use in log file
 
-    main(options)    
+    call_inserter(options)    
+
+    # Close logfile and exit application
+    f.close()
+    sys.exit(0)
