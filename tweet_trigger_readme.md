@@ -21,6 +21,6 @@ Make sure this conda environment is activated for whatever user is running PDL.
 Running tweet_trigger.py
 ------------------------
 
-To run tweet_trigger.py, you also must have configTweeter.ini installed in the same directory. This file must contain the necessary information to access the Twitter API and the tweet_audit table of the database. An example configTweeter.ini can be found in this Git repository. 
+To run tweet_trigger.py, you also must have configTweeter.ini installed in the same directory. This file must contain the necessary information to access the Twitter API and the tweet_audit table of the database. An example configTweeter.ini can be found in this Git repository, under .\bin\exampleConfigFiles\.
 
 Tweet_trigger.py is instantiated by PDL, and needs its own indexer_listener and listener in the Product Client config file to run. 
