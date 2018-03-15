@@ -5,16 +5,13 @@ import os.path
 import datetime
 import sys
 import configparser
-import sqlite3
-import warnings
-import socket
-import time
 import urllib.request
 import urllib.parse
 import urllib.error
 import json
 import psycopg2
-import twitter
+import tweepy
+import traceback
 
 """
 tweet_trigger.py - An application for tweeting new earthquake events.
@@ -72,64 +69,68 @@ def check_event(eventdict):
     lat = eventdict['lat']
     lon = eventdict['lon']
     loc = eventdict['loc']
- 
-    # Check 0: event magnitude greater than magnitude threshold
-    magthresh = float(config.get('SETUP', 'magthresh'))
 
-    if float(mag) < magthresh:
-        f.write("%s: Ignoring event %s with magnitude %s less than threshold %s. Exiting.\n" 
-                % (str(tnow), eid, mag, str(magthresh)))
-        return False
+    try:
+        # Check 0: event magnitude greater than magnitude threshold
+        magthresh = float(config.get('SETUP', 'magthresh'))
 
-    # Check 1: event is not too old
-    timethresh = int(config.get('SETUP', 'timethresh'))
-    eventdt = datetime.datetime.strptime(str(etime), '%Y%m%d%H%M%S.%f')
-    mineventdt = utcnow - datetime.timedelta(minutes=timethresh)
+        if float(mag) < magthresh:
+            f.write("%s: Ignoring event %s with magnitude %s less than threshold %s. Exiting.\n" 
+                    % (str(tnow), eid, mag, str(magthresh)))
+            return False
 
-    if (eventdt < mineventdt):
-        f.write("%s: Ignoring event %s because its timestamp %s is older than minimum " + \
-                "tweetable time %s. Exiting.\n" % (str(tnow, eid, str(etime), 
-                                                   str(mineventdt))))
-        return False
+        # Check 1: event is not too old
+        timethresh = int(config.get('SETUP', 'timethresh'))
+        eventdt = datetime.datetime.strptime(str(etime), '%Y%m%d%H%M%S.%f')
+        mineventdt = utcnow - datetime.timedelta(minutes=timethresh)
+        mineventstring = str(mineventdt)
 
-    # Check 2: event is not in the future
-    if (eventdt > utcnow):
-        f.write("%s: Ignoring event %s with future time %s. Exiting.\n" 
-                % (str(tnow), eid, str(etime)))
-        return False
+        if (eventdt < mineventdt):
+            f.write("""%s: Ignoring event %s because timestamp %s is older than minimum %s. \
+                    Exiting.\n""" % (str(tnow), eid, str(etime), mineventstring))
+            return False
 
-    # Check 3: event has not already been tweeted
-    query = "select event_id from tweet_audit where event_id = '" + eid + "'"
-    longquery = query + " union select NULL where not exists (" + query + ");"
-    cur.execute(longquery)
-    tweetmatch = cur.fetchone()[0]
+        # Check 2: event is not in the future
+        if (eventdt > utcnow):
+            f.write("%s: Ignoring event %s with future time %s. Exiting.\n" 
+                    % (str(tnow), eid, str(etime)))
+            return False
 
-    if tweetmatch is not None:
-        f.write("%s: Ignoring already tweeted event %s. Exiting.\n" % (str(tnow), eid))
-        return False
+        # Check 3: event has not already been tweeted
+        query = "select event_id from tweet_audit where event_id = '" + eid + "'"
+        longquery = query + " union select NULL where not exists (" + query + ");"
+        cur.execute(longquery)
+        tweetmatch = cur.fetchone()[0]
 
-    # Check 4: tweet has not already been sent for another event which is 
-    # close in time and space to this event
-    tooclosedistance = config.get('SETUP', 'tooclosedistance')
-    toooldtime = config.get('SETUP', 'toooldtime')
-    latlondiff = format((int(tooclosedistance)/111), '.1f')
-    eventtime = etime[:8] + 'T' + etime[8:]
+        if tweetmatch is not None:
+            f.write("%s: Ignoring already tweeted event %s. Exiting.\n" % (str(tnow), eid))
+            return False
 
-    query = ("select event_id from tweet_audit where (event_time <= (timestamp'{0}' + interval "
-             "'{1}' minute) and event_time >= (timestamp'{2}' - interval '{3}' minute)) and " 
-             "abs(event_lat - {4}) <= {5} and abs(event_lon - {6}) <= {7}")
-    query = query.format(eventtime, toooldtime, eventtime, toooldtime, lat, str(latlondiff), 
-                         lon, str(latlondiff))
-    longquery = query + " union select NULL where not exists (" + query + ");"
-    cur.execute(longquery)
-    tweetmatch = cur.fetchone()[0]
+        # Check 4: tweet has not already been sent for another event which is 
+        # close in time and space to this event
+        tooclosedistance = config.get('SETUP', 'tooclosedistance')
+        toooldtime = config.get('SETUP', 'toooldtime')
+        latlondiff = format((int(tooclosedistance)/111), '.1f')
+        eventtime = etime[:8] + 'T' + etime[8:]
 
-    if tweetmatch is not None:
-        f.write("%s: Ignoring event '%s', close in time and location to already tweeted " + \
-                "event %s. Exiting.\n" % (str(tnow), eid, tweetmatch))
-        return False
+        query = ("select event_id from tweet_audit where (event_time <= (timestamp'{0}' + interval "
+                 "'{1}' minute) and event_time >= (timestamp'{2}' - interval '{3}' minute)) and " 
+                 "abs(event_lat - {4}) <= {5} and abs(event_lon - {6}) <= {7}")
+        query = query.format(eventtime, toooldtime, eventtime, toooldtime, lat, str(latlondiff), 
+                             lon, str(latlondiff))
+        longquery = query + " union select NULL where not exists (" + query + ");"
+        cur.execute(longquery)
+        tweetmatch = cur.fetchone()[0]
 
-    return True
+        if tweetmatch is not None:
+            f.write("%s: Ignoring event '%s', close in time and location to already tweeted " + \
+                    "event %s. Exiting.\n" % (str(tnow), eid, tweetmatch))
+            return False
+
+        return True
+    except Exception as e:
+        f.write("%s: Error encountered while checking event %s.\n" % (str(tnow), eid))
+        f.write(traceback.format_exc())
 
 def get_short_url(eventdict):
     """
@@ -238,7 +239,11 @@ def tweet_event(eventdict):
         eventpassed = check_event(eventdict)
         if not eventpassed:
             return(False,"Event did not pass checks.",0)
+    except:
+        f.write("%s: Error encountered in try block 0.\n" % str(tnow))
+        return(False,e,0)
 
+    try:
         eid = eventdict['id']
         etime = eventdict['time']
         mag = eventdict['mag']
@@ -248,7 +253,11 @@ def tweet_event(eventdict):
 
         # Get short URL used in tweet string
         shorturl = get_short_url(eventdict)
+    except Exception as e:
+        f.write("%s: Error encountered in try block 1.\n" % str(tnow))
+        return(False,e,0)
 
+    try:
         # Connect to Twitter API and tweet event information
         twitterapikey = config.get('TWITTER', 'twitter_apikey')
         apisecret = config.get('TWITTER', 'twitter_apisecret')
@@ -257,20 +266,25 @@ def tweet_event(eventdict):
         origindate = eventdatetime.strftime('%b-%d %H:%M UTC')
 
         # Create string that will be tweeted
-        tweetstring = "Prelim M" + "%s earthquake %s %s, updates %s" % (mag, loc, origindate, shorturl)
+        tweetstring = "Prelim M{} earthquake {} {}, updates {}".format(mag, loc, origindate, shorturl)
+    except Exception as e:
+        f.write("%s: Error encountered in try block 2.\n" % str(tnow))
+        return(False,e,0)
 
+    try:
         # Connect to twitter API and send tweet
-        api = twitter.Api(consumer_key=twitterapikey,
-                          consumer_secret=apisecret,
-                          access_token_key=accesstoken,
-                          access_token_secret=secrettoken)
-        status = api.PostUpdate(tweetstring)
+        auth = tweepy.OAuthHandler(twitterapikey, apisecret)
+        auth.set_access_token(accesstoken, secrettoken)
+        api = tweepy.API(auth)
+
+        api.update_status(tweetstring)
         f.write("%s: Tweeting event %s - %s\n" % (str(tnow), eid, tweetstring))
         
         # Calculate time it took to tweet event
         t2 =  datetime.datetime.now()
         td=t2-t1
     except Exception as e:
+        f.write("%s: Error encountered in try block 3.\n" % str(tnow))
         return(False,e,0)
 
     add_tweet_to_db(eventdict)
@@ -344,6 +358,7 @@ def call_tweeter(options):
             errmsg = "%s: Tweet for event %s failed with message: '%s'. Exiting." % (tnow, eventdict['id'], msg)
             if loggingon:
                 f.write(errmsg+'\n')
+                f.write(traceback.format_exc())
         close_both()
         sys.exit(1)
     else:
