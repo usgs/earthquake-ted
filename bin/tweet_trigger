@@ -86,7 +86,7 @@ def check_event(eventdict):
         mineventstring = str(mineventdt)
 
         if (eventdt < mineventdt):
-            f.write("""%s: Ignoring event %s because timestamp %s is older than minimum %s. \
+            f.write("""%s: Ignoring event %s because timestamp %s is older than %s. \
                     Exiting.\n""" % (str(tnow), eid, str(etime), mineventstring))
             return False
 
@@ -239,11 +239,7 @@ def tweet_event(eventdict):
         eventpassed = check_event(eventdict)
         if not eventpassed:
             return(False,"Event did not pass checks.",0)
-    except:
-        f.write("%s: Error encountered in try block 0.\n" % str(tnow))
-        return(False,e,0)
 
-    try:
         eid = eventdict['id']
         etime = eventdict['time']
         mag = eventdict['mag']
@@ -253,11 +249,7 @@ def tweet_event(eventdict):
 
         # Get short URL used in tweet string
         shorturl = get_short_url(eventdict)
-    except Exception as e:
-        f.write("%s: Error encountered in try block 1.\n" % str(tnow))
-        return(False,e,0)
 
-    try:
         # Connect to Twitter API and tweet event information
         twitterapikey = config.get('TWITTER', 'twitter_apikey')
         apisecret = config.get('TWITTER', 'twitter_apisecret')
@@ -267,11 +259,7 @@ def tweet_event(eventdict):
 
         # Create string that will be tweeted
         tweetstring = "Prelim M{} earthquake {} {}, updates {}".format(mag, loc, origindate, shorturl)
-    except Exception as e:
-        f.write("%s: Error encountered in try block 2.\n" % str(tnow))
-        return(False,e,0)
 
-    try:
         # Connect to twitter API and send tweet
         auth = tweepy.OAuthHandler(twitterapikey, apisecret)
         auth.set_access_token(accesstoken, secrettoken)
@@ -284,7 +272,6 @@ def tweet_event(eventdict):
         t2 =  datetime.datetime.now()
         td=t2-t1
     except Exception as e:
-        f.write("%s: Error encountered in try block 3.\n" % str(tnow))
         return(False,e,0)
 
     add_tweet_to_db(eventdict)
@@ -477,10 +464,10 @@ if __name__ == '__main__':
 
     # Connect to database
     prefix = 'testdb'
-    port = config.get('DATABASE',prefix+'_port')
-    user = config.get('DATABASE',prefix+'_user')
-    dbname = config.get('DATABASE',prefix+'_name')
-    password = config.get('DATABASE',prefix+'_password')
+    port = config.get('DATABASE', prefix+'_port')
+    user = config.get('DATABASE', prefix+'_user')
+    dbname = config.get('DATABASE', prefix+'_name')
+    password = config.get('DATABASE', prefix+'_password')
 
     conn = psycopg2.connect(dbname=dbname, user=user, port=port, password=password)
     conn.autocommit = True
