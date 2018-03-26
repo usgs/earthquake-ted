@@ -12,7 +12,6 @@ import time
 import urllib.request
 import urllib.parse
 import urllib.error
-#import json
 from ted.trigger_funcs import get_region_name
 
 """
