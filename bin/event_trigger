@@ -1,25 +1,25 @@
 #!/usr/bin/env python
 
 from argparse import ArgumentParser
+import logging.handlers
 import os.path
 import datetime
 import sys
 import configparser
-import sqlite3
 import warnings
 import socket
 import time
 import urllib.request
 import urllib.parse
 import urllib.error
-from ted.trigger_funcs import get_region_name
+# Local imports
+from ted.trigger_funcs import create_logger, get_region_name
 
 """
 event_trigger.py - An application for generating TED messages.
 This application presumes that it will be called by the Product Distribution Product Indexer.
 To get help for this application, type "trigger.py --help" or "trigger.py" with no arguments.
 """
-
 def print_event(eventdict):
     """
     Substitute function for postEvent (to be used for offline testing).
@@ -45,8 +45,10 @@ def print_event(eventdict):
     lon = eventdict['lon']
     depth = eventdict['depth']
     loc = eventdict['loc']
-    print(fmt % (type, eid, time, mag, lat, lon, depth, loc))
-    return (True, '')
+    event_string = fmt % (type, eid, time, mag, lat, lon, depth, loc)
+
+    # Print event_string to logfile
+    logger.info("'%s'", event_string)
 
 def post_event(e):
     """
@@ -82,23 +84,20 @@ def post_event(e):
         return (False, msg, 0)
     return (True, msg, td.seconds)
 
-def main(options):
+def call_poster(options):
     if options['action'] not in ['EVENT_ADDED', 'EVENT_UPDATED']:
-        f.write('%s: Ignoring all actions but "EVENT_ADDED" and "EVENT_UPDATED".  Exiting.\n' % str(tnow))
-        processeddb.close()
-        f.close()
+        info_string = "Ignoring all actions but 'EVENT_ADDED' and 'EVENT_UPDATED'.  Exiting"
+        logger.info(info_string)
         sys.exit(0)
 
     if options['source'].lower() in ignoreregions:
-        f.write('%s: Ignoring region "%s".  Exiting.\n' % (str(tnow), options['source'].lower()))
-        processeddb.close()
-        f.close()
+        info_string = "Ignoring region '%s'.  Exiting" % options['source'].lower()
+        logger.info(info_string)
         sys.exit(0)
 
     if options['code'] != options['preferredID']:
-        f.write('%s: Ignoring non-preferred ID "%s".  Exiting.\n' % (str(tnow), options['code']))
-        processeddb.close()
-        f.close()
+        info_string = "Ignoring non-preferred ID '%s'.  Exiting" % options['code']
+        logger.info(info_string)
         sys.exit(0)
 
     eventdatetime = datetime.datetime.strptime(options['preferredEventTime'], '%Y-%m-%dT%H:%M:%S.%fZ')
@@ -121,24 +120,19 @@ def main(options):
     else:
         eventdict['server'] = prodserver
 
-    res, msg, nseconds = post_event(eventdict)
+    # res, msg, nseconds = post_event(eventdict)
+    print_event(eventdict) 
 
     if not res:
-        errmsg = '%s: Tweet for event %s failed with message: "%s". Exiting.' % (tnow, eventdict['id'], msg)
-        if loggingOn:
-            f.write(errmsg+'\n')
+        errmsg = "Tweet for event %s failed with message: '%s'. Exiting." % (eventdict['id'], msg)
+        logger.error(errmsg)
         print(errmsg)
-        f.close()
-        processeddb.close()
         sys.exit(1)
     else:
         successmsg = '%s: Tweeter responded for event %s in %i seconds with message "%s"' % (tnow, eventdict['id'], nseconds, msg)
-        if loggingOn:
-            f.write(successmsg+'\n')
+        logger.info(successmsg)
         print(successmsg)
 
-    processeddb.close()
-    f.close()
     sys.exit(0)
 
 if __name__ == '__main__':
@@ -223,34 +217,22 @@ if __name__ == '__main__':
         print('File "%s" does not exist.  Exiting' % configfile)
         sys.exit(1)
 
-
-    dbfile = os.path.join(homedir, 'already_processed.db')
-    processeddb = sqlite3.connect(dbfile)
-    c = processeddb.cursor()
-
-    # if os.path.exists('already_processed.db'):
-        # do something
-    # else:
-        # create db file
-
     config = configparser.ConfigParser()
-    config.readfp(open(configfile))
+    config.read_file(open(configfile))
 
     if not config.has_section('SETUP'):
         print('Config file "%s" is missing section "SETUP".  Exiting' % configfile)
-        processeddb.close()
         sys.exit(1)
 
     reqoptions = ['magthresh', 'ignoreregions', 'devtweetserver', 'prodtweetserver',
                   'urltemplate', 'development_hostname', 'test_hostname', 'production_hostname',
-                  'logging_on', 'logfile']
+                  'logging_level', 'logfile']
     missing = []
     for option in reqoptions:
         if not config.has_option('SETUP', option):
             missing.append(option)
     if len(missing):
         print('Config file "%s" is missing SETUP options "%s".  Exiting' % (configfile, ','.join(missing)))
-        processeddb.close()
         sys.exit(1)
 
     magthresh = float(config.get('SETUP', 'magthresh'))
@@ -260,13 +242,15 @@ if __name__ == '__main__':
     devhost = config.get('SETUP', 'development_hostname')
     testhost = config.get('SETUP', 'test_hostname')
     prodhost = config.get('SETUP', 'production_hostname')
-    loggingOn = bool(int(config.get('SETUP', 'logging_on')))
     logfile = os.path.join(homedir, config.get('SETUP', 'logfile'))
 
-    # Set up log file
-    if loggingOn:
-        f = open(logfile, 'at')
+    # Instruct logging module when to back up logfile and create new, empty one
+    # Logfile will be archived once a week on Monday, and only 8 will be kept at a time.
+    bkup_inttype = 'W0' # W0 = Monday
+    bkup_interval = 1
+    bkup_count = 8
+    bkup_suffix = '%Y-%m-%d_%H:%M:%S'
+    # Create logfile
+    logger = create_logger(bkup_inttype, bkup_interval, bkup_count, bkup_suffix)
 
-    tnow = datetime.datetime.now() # For use in log file
-
-    main(options)    
+    call_poster(options)    

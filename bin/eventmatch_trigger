@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 from argparse import ArgumentParser
+import logging.handlers
 import os.path
 import datetime
 import sys
@@ -10,7 +11,9 @@ import urllib.parse
 import urllib.request
 import urllib.error
 import psycopg2
-from ted.trigger_funcs import get_region_name
+# Local imports
+from ted.trigger_funcs import create_logger, get_region_name
+
 """
 eventmatch_trigger.py - An application which adds events to a specified Postgres table.
 This application presumes that it will be called by the Product Distribution Product Indexer.
@@ -32,7 +35,7 @@ def insert_from_dict(dictionary):
     """
 
     # Connect to database
-    prefix = 'eventMatch'
+    prefix = 'testDB'
     port = config.get('DATABASE',prefix+'_port')
     user = config.get('DATABASE',prefix+'_user')
     dbname = config.get('DATABASE',prefix+'_name')
@@ -48,11 +51,10 @@ def insert_from_dict(dictionary):
         cur.execute("INSERT INTO event_ext (event_time, event_id, event_lat, event_lon," + \
                     " magnitude) VALUES (%s, %s, %s, %s, %s);", (eventtime, dictionary['id'],
                     dictionary['lat'], dictionary['lon'], dictionary['mag']))
-        f.write("%s: Successfully inserted dictionary for event %s into event_ext table.\n" %
-                (str(tnow),str(dictionary['id'])))
     except Exception as e:
-        f.write("%s: Failed to insert event dictionary into event_ext table. Error %s\n" % str(tnow),str(e))
+        logger.error("Failed to insert event dictionary into event_ext table", exc_info=True)
     finally:
+        logger.info("Successfully inserted event '%s' into event_ext table.", dictionary['id'])
         cur.close()
         conn.close()
 
@@ -78,38 +80,42 @@ def call_inserter(options):
     """
     # If event is not an event add or event update trigger, exit application
     if options['action'] not in ['EVENT_ADDED','EVENT_UPDATED']:
-        f.write('%s: Ignoring all actions but "EVENT_ADDED" and "EVENT_UPDATED".  Exiting.\n' % str(tnow))
-        f.close()
+        logger.info("Ignoring all actions but 'EVENT_ADDED' and 'EVENT_UPDATED'. Exiting.")
         sys.exit(0)
 
     # If network source is in ignoreregions list, exit application
+    ignoreregions = config.get('SETUP','ignoreregions').split(',')
     if options['source'].lower() in ignoreregions:
-        f.write('%s: Ignoring region "%s".  Exiting.\n' % (str(tnow),options['source'].lower()))
-        f.close()
+        logger.info("Ignoring region '%s'. Exiting.", options['source'].lower())
         sys.exit(0)
 
     # If event code is not same as preferred event ID, exit application
     if options['code'] != options['preferredID']:
-        f.write('%s: Ignoring non-preferred ID "%s".  Exiting.\n' % (str(tnow),options['code']))
-        f.close()
+        logger.info("Ignoring non-preferred ID '%s'. Exiting.", options['code'])
         sys.exit(0)
 
-    eventdt = datetime.datetime.strptime(options['preferredEventTime'],'%Y-%m-%dT%H:%M:%S.%fZ')
+    try:
+        eventdt = datetime.datetime.strptime(options['preferredEventTime'],'%Y-%m-%dT%H:%M:%S.%fZ')
 
-    eventdict = {}
-    eventdict['type'] = 'add'
-    eventdict['id'] = options['preferredID'].lower()
-    eventdict['source'] = options['source'].lower()
-    eventdict['time'] = eventdt.strftime('%Y%m%d%H%M%S.00')
-    eventdict['lat'] = '%.4f' % float(options['preferredLatitude'])
-    eventdict['lon'] = '%.4f' % float(options['preferredLongitude'])
-    eventdict['depth'] = '%.1f' % float(options['preferredDepth'])
-    eventdict['mag'] = '%.1f' % float(options['preferredMagnitude'])
-    eventdict['loc'] = get_region_name(float(options['preferredLatitude']),float(options['preferredLongitude']))
-    urlt = config.get('SETUP','urltemplate')
-    eventdict['uri'] = urlt.replace('[EVENT]',options['preferredID'].lower())
+        eventdict = {}
+        eventdict['type'] = 'add'
+        eventdict['id'] = options['preferredID'].lower()
+        eventdict['source'] = options['source'].lower()
+        eventdict['time'] = eventdt.strftime('%Y%m%d%H%M%S.00')
+        eventdict['lat'] = '%.4f' % float(options['preferredLatitude'])
+        eventdict['lon'] = '%.4f' % float(options['preferredLongitude'])
+        eventdict['depth'] = '%.1f' % float(options['preferredDepth'])
+        eventdict['mag'] = '%.1f' % float(options['preferredMagnitude'])
+        eventdict['loc'] = get_region_name(float(options['preferredLatitude']),float(options['preferredLongitude']))
+        urlt = config.get('SETUP','urltemplate')
+        eventdict['uri'] = urlt.replace('[EVENT]',options['preferredID'].lower())
+    except Exception as e:
+        logger.error("Error caught while creating event dictionary", exc_info=True)
 
     insert_from_dict(eventdict)
+
+    # Exit application
+    sys.exit(0)
 
 if __name__ == '__main__':
     parser = ArgumentParser(prog='triggerEventMatch', usage ='%(prog)s [options]')
@@ -194,13 +200,13 @@ if __name__ == '__main__':
         sys.exit(1)
 
     config = configparser.ConfigParser()
-    config.readfp(open(configfile))
+    config.read_file(open(configfile))
 
     if not config.has_section('SETUP'):
         print("Config file \"%s\" is missing section \"SETUP\".  Exiting", configfile)
         sys.exit(1)
 
-    reqoptions = ['magthresh','ignoreregions','logging_on','logfile']
+    reqoptions = ['ignoreregions','logging_level','logfile']
 
     missing = []
     for option in reqoptions:
@@ -210,18 +216,13 @@ if __name__ == '__main__':
         print("Config file \"%s\" is missing SETUP options \"%s\".  Exiting", configfile,','.join(missing))
         sys.exit(1)
 
-    magthresh = float(config.get('SETUP','magthresh'))
-    ignoreregions = config.get('SETUP','ignoreregions').split(',')
-    loggingOn = bool(int(config.get('SETUP','logging_on')))
-    logfile = os.path.join(homedir,config.get('SETUP','logfile'))
-
-    # Set up log file
-    if loggingOn:
-        f = open(logfile,'at')
-    tnow = datetime.datetime.now() # For use in log file
+    # Instruct logging module when to back up logfile and create new, empty one
+    # Logfile will be archived once a week on Monday, and only 8 will be kept at a time.
+    bkup_inttype = 'W0' # W0 = Monday
+    bkup_interval = 1
+    bkup_count = 8
+    bkup_suffix = '%Y-%m-%d_%H:%M:%S'
+    # Create logfile
+    logger = create_logger(bkup_inttype, bkup_interval, bkup_count, bkup_suffix)
 
     call_inserter(options)    
-
-    # Close logfile and exit application
-    f.close()
-    sys.exit(0)
