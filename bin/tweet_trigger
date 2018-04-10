@@ -62,7 +62,6 @@ def check_event(eventdict):
     mineventdt = utcnow - timedelta(minutes=timethresh)
 
     if (eventdt < mineventdt):
-        logger.info("Should see info message 0 next")
         info_string = """Ignoring event %s because its timestamp %s is older than minimum 
                       tweetable time %s. Exiting""" % (
                       eid, str(eventdt), 
@@ -72,7 +71,6 @@ def check_event(eventdict):
 
     # Check 2: event is not in the future
     if (eventdt > utcnow):
-        logger.info("Should see info message 1 next")
         info_string = "Ignoring event %s with future time %s. Exiting" % (eid, str(eventdt))
         logger.info(info_string)
         return False
@@ -84,7 +82,6 @@ def check_event(eventdict):
     tweetmatch = cur.fetchone()[0]
 
     if tweetmatch is not None:
-        logger.info("Should see info message 2 next")
         logger.info("Ignoring already tweeted event %s. Exiting", eid)
         return False
 
@@ -105,7 +102,6 @@ def check_event(eventdict):
     tweetmatch = cur.fetchone()[0]
 
     if tweetmatch is not None:
-        logger.info("Should see info message 3 next")
         info_string = """Ignoring event '%s', close in time and location to already tweeted 
                       event %s. Exiting""" % (
                       eid, 
@@ -156,12 +152,10 @@ def get_short_url(eventdict):
         if statuscode == '200':
             shorturl = jdict['response']['data']['entry'][0]['short_url']
         else:
-            logger.info("Should see warning message next")
             logger.warning("Go.usa.gov returned error while shortening url for event %s", 
                            eid)
             pass
     except Exception as e:
-        logger.info("Should see error message next")
         logger.error("Could not shorten URL for event %s", eid, exc_info=True)
         pass
 
@@ -196,7 +190,6 @@ def add_tweet_to_db(eventdict):
                     eventtime, mag, utcnow))
         logger.info("Successfully inserted tweet info for event %s into tweet_audit table.", eid)
     except Exception as e:
-        logger.info("Should see error message next")
         logger.error("Failed to insert event dictionary into tweet_audit table", exc_info=True)
 
 def tweet_event(eventdict):
@@ -280,7 +273,7 @@ def call_tweeter(options):
     Called by __main__. Creates event dictionary and calls tweet_event(). 
     options: Dictionary with the following fields, all containing STRINGS:
              - status: Event status (default is 'UPDATE')
-             - preferredmagnitude: Prefered event magnitude
+             - preferredMagnitude: Prefered event magnitude
              - preferredLongitude: Preferred event longitude
              - preferredLatitude: Preferred event latitude
              - code: Event code
@@ -304,7 +297,6 @@ def call_tweeter(options):
     # If network source is in ignoreregions list, exit application
     ignoreregions = config.get('SETUP','ignoreregions').split(',')
     if options['source'].lower() in ignoreregions:
-        logger.info("Should see info message 5 next")
         logger.info("Ignoring region '%s'.  Exiting", options['source'].lower())
         close_all()
         sys.exit(0)
@@ -315,19 +307,22 @@ def call_tweeter(options):
         close_all()
         sys.exit(0)
 
-    eventdict = {}
-    eventdict['type'] = 'add'
-    eventdict['id'] = options['preferredID'].lower()
-    eventdict['source'] = options['source'].lower()
-    eventdict['time'] = eventdatetime.strftime('%Y%m%d%H%M%S.00')
-    eventdict['lat'] = '%.4f' % float(options['preferredLatitude'])
-    eventdict['lon'] = '%.4f' % float(options['preferredLongitude'])
-    eventdict['depth'] = '%.1f' % float(options['preferredDepth'])
-    eventdict['mag'] = '%.1f' % float(options['preferredMagnitude'])
-    eventdict['loc'] = get_region_name(float(options['preferredLatitude']), 
-                                       float(options['preferredLongitude']))
-    urlt = config.get('SETUP', 'long_urltemplate')
-    eventdict['uri'] = urlt.replace('[EVENT]', options['preferredID'].lower())
+    try:
+        eventdict = {}
+        eventdict['type'] = 'add'
+        eventdict['id'] = options['preferredID'].lower()
+        eventdict['source'] = options['source'].lower()
+        eventdict['time'] = eventdatetime.strftime('%Y%m%d%H%M%S.00')
+        eventdict['lat'] = '%.4f' % float(options['preferredLatitude'])
+        eventdict['lon'] = '%.4f' % float(options['preferredLongitude'])
+        eventdict['depth'] = '%.1f' % float(options['preferredDepth'])
+        eventdict['mag'] = '%.1f' % float(options['preferredMagnitude'])
+        eventdict['loc'] = get_region_name(float(options['preferredLatitude']), 
+                                           float(options['preferredLongitude']))
+        urlt = config.get('SETUP', 'long_urltemplate')
+        eventdict['uri'] = urlt.replace('[EVENT]', options['preferredID'].lower())
+    except Exception as e:
+        logger.error("Error caught while creating event dictionary", exc_info=True)
 
     res, msg, nseconds = tweet_event(eventdict)
     eid = eventdict['id']
@@ -336,9 +331,8 @@ def call_tweeter(options):
         close_all()
         sys.exit(1)
     else:
-        logger.info("Should see info message 7 next")
-        info_string = "Tweeter responded for event %s in %f seconds with message '%s'" % (
-                      eid, nseconds, msg)
+        info_string = "Tweeter responded for event %s in %s seconds with message '%s'" % (
+                      eid, str(nseconds), msg)
         logger.info(info_string)
 
         close_all()
@@ -400,7 +394,6 @@ if __name__ == '__main__':
     
     parser.add_argument("--preferred-eventtime", dest="preferredEventTime",
                       help="""The preferred event time (2010-01-14T14:11:28.691Z).""", metavar="PREFERREDDEPTH")
-    
 
 
     # Filter out any options that are not in the above list
@@ -417,6 +410,10 @@ if __name__ == '__main__':
              break
     if not foundone:
         parser.print_help()
+        sys.exit(0)
+
+    # Check that there is a preferred magnitude (fix to recurring dictionary error)
+    if options['preferredMagnitude'] == 'null':
         sys.exit(0)
 
     # Read in config file

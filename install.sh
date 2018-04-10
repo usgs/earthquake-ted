@@ -26,20 +26,22 @@ if [ ! "$conda" ] ; then
 fi
 
 # Choose an environment file based on platform
-unamestr=`uname`
-if [ "$unamestr" == 'Linux' ]; then
-    env_file=environment_linux.yml
-elif [ "$unamestr" == 'FreeBSD' ] || [ "$unamestr" == 'Darwin' ]; then
-    env_file=environment_osx.yml
-fi
+# unamestr=`uname`
+# if [ "$unamestr" == 'Linux' ]; then
+#     env_file=environment_linux.yml
+# elif [ "$unamestr" == 'FreeBSD' ] || [ "$unamestr" == 'Darwin' ]; then
+#     env_file=environment_osx.yml
+# fi
 
 # If the user has specified the -r (reset) flag, then create an
 # environment based on only the named dependencies, without
 # any versions of packages specified.
-if [ $reset == 1 ]; then
-    echo "Ignoring platform, letting conda sort out dependencies..."
-    env_file=environment.yml
-fi
+# if [ $reset == 1 ]; then
+#     echo "Ignoring platform, letting conda sort out dependencies..."
+#     env_file=environment.yml
+# fi
+
+env_file=environment.yml
 
 # Turn off whatever other virtual environment user might be in
 source deactivate

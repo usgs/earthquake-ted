@@ -58,8 +58,9 @@ dependencies:
 - pcre=8.39
 - pexpect=4.3.1
 - pickleshare=0.7.4
-- pip=9.0.1
+- pip=9.0.3
 - prompt_toolkit=1.0.15
+- psycopg2=2.7.3.1
 - ptyprocess=0.5.2
 - pygments=2.2.0
 - pyparsing=2.2.0
@@ -83,6 +84,7 @@ dependencies:
 - tk=8.6.7
 - tornado=4.5.3
 - traitlets=4.3.2
+- tweepy=3.5.0
 - wcwidth=0.1.7
 - webencodings=0.5
 - wheel=0.30.0
@@ -100,5 +102,7 @@ dependencies:
   - jupyter-console==5.2.0
   - jupyter-core==4.4.0
   - prompt-toolkit==1.0.15
+  - psycopg2==2.7.3.1
+  - tweepy==3.5.0
 
 

@@ -12,7 +12,7 @@ import time
 import urllib.request
 import urllib.parse
 import urllib.error
-# Local imports
+# Local imports 
 from ted.trigger_funcs import create_logger, get_region_name
 
 """
@@ -85,35 +85,55 @@ def post_event(e):
     return (True, msg, td.seconds)
 
 def call_poster(options):
+    """
+    Called by __main__. Creates event dictionary and calls post_event(). 
+    options: Dictionary with the following fields, all containing STRINGS:
+             - status: Event status (default is 'UPDATE')
+             - preferredmagnitude: Prefered event magnitude
+             - preferredLongitude: Preferred event longitude
+             - preferredLatitude: Preferred event latitude
+             - code: Event code
+             - action: Action to take with event
+             - eventIDList: All associated event IDs for event
+             - preferredEventTime: Preferred event time
+             - source: Network that generated product
+             - preferredDepth: Preferred event depth
+             - updateTime: Time when this version of event was updated
+             - trackerURL: Location where tracking updates are sent 
+             - directory: Path to directory that contains product contents
+             - preferredID: Preferred event ID
+             - type: Event type (should be 'origin')
+    """
+
     if options['action'] not in ['EVENT_ADDED', 'EVENT_UPDATED']:
-        info_string = "Ignoring all actions but 'EVENT_ADDED' and 'EVENT_UPDATED'.  Exiting"
-        logger.info(info_string)
+        logger.info("Ignoring all actions but 'EVENT_ADDED' and 'EVENT_UPDATED'.  Exiting")
         sys.exit(0)
 
     if options['source'].lower() in ignoreregions:
-        info_string = "Ignoring region '%s'.  Exiting" % options['source'].lower()
-        logger.info(info_string)
+        logger.info("Ignoring region '%s'.  Exiting", options['source'].lower())
         sys.exit(0)
 
     if options['code'] != options['preferredID']:
-        info_string = "Ignoring non-preferred ID '%s'.  Exiting" % options['code']
-        logger.info(info_string)
+        logger.info("Ignoring non-preferred ID '%s'.  Exiting", options['code'])
         sys.exit(0)
 
-    eventdatetime = datetime.datetime.strptime(options['preferredEventTime'], '%Y-%m-%dT%H:%M:%S.%fZ')
+    try:
+        eventdatetime = datetime.datetime.strptime(options['preferredEventTime'], '%Y-%m-%dT%H:%M:%S.%fZ')
 
-    eventdict = {}
-    eventdict['type'] = 'add'
-    eventdict['id'] = options['preferredID'].lower()
-    eventdict['source'] = options['source'].lower()
-    eventdict['time'] = eventdatetime.strftime('%Y%m%d%H%M%S.00')
-    eventdict['lat'] = '%.4f' % float(options['preferredLatitude'])
-    eventdict['lon'] = '%.4f' % float(options['preferredLongitude'])
-    eventdict['depth'] = '%.1f' % float(options['preferredDepth'])
-    eventdict['mag'] = '%.1f' % float(options['preferredMagnitude'])
-    eventdict['loc'] = get_region_name(float(options['preferredLatitude']), float(options['preferredLongitude']))
-    urlt = config.get('SETUP', 'urltemplate')
-    eventdict['uri'] = urlt.replace('[EVENT]', options['preferredID'].lower())
+        eventdict = {}
+        eventdict['type'] = 'add'
+        eventdict['id'] = options['preferredID'].lower()
+        eventdict['source'] = options['source'].lower()
+        eventdict['time'] = eventdatetime.strftime('%Y%m%d%H%M%S.00')
+        eventdict['lat'] = '%.4f' % float(options['preferredLatitude'])
+        eventdict['lon'] = '%.4f' % float(options['preferredLongitude'])
+        eventdict['depth'] = '%.1f' % float(options['preferredDepth'])
+        eventdict['mag'] = '%.1f' % float(options['preferredMagnitude'])
+        eventdict['loc'] = get_region_name(float(options['preferredLatitude']), float(options['preferredLongitude']))
+        urlt = config.get('SETUP', 'urltemplate')
+        eventdict['uri'] = urlt.replace('[EVENT]', options['preferredID'].lower())
+    except Exception as e:
+        logger.error("Error caught while creating event dictionary", exc_info=True)
 
     if socket.gethostname().find(devhost) > -1 or socket.gethostname().find(testhost) > -1:
         eventdict['server'] = devserver
@@ -208,6 +228,10 @@ if __name__ == '__main__':
              break
     if not foundOne:
         parser.print_help()
+        sys.exit(0)
+
+    # Check that there is a preferred magnitude (fix to recurring dictionary error)
+    if options['preferredMagnitude'] == 'null':
         sys.exit(0)
 
     # Read in config file
