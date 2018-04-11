@@ -38,18 +38,19 @@ def insert_from_dict(cur, eventdict):
     try:
         eventtime = eventdict['time'][:8] + 'T' + eventdict['time'][8:]
         # Add event to database
-        cur.execute("INSERT INTO event_ext (event_time, event_id, event_lat, event_lon," + \
-                    " magnitude) VALUES (%s, %s, %s, %s, %s);", (eventtime, eventdict['id'],
+        cur.execute("insert into event_ext (event_time, event_id, event_lat, event_lon," + \
+                    " magnitude) values (%s, %s, %s, %s, %s);", (eventtime, eventdict['id'],
                     eventdict['lat'], eventdict['lon'], eventdict['mag']))
         logger.info("Successfully inserted event '%s' into event_ext table", eventdict['id'])
     except Exception as e:
         logger.error("Failed to insert event '%s' into event_ext table", eventdict['id'], 
                      exc_info=True)
 
-def match_event(cur, eventdict):
+def match_event(conn, cur, eventdict):
     """
     Checks detection_ext table for detection which matches time and location of event. 
     Updates event_match table with event and detection ids once a match is found.
+    conn: Postrgres database connection object.
     cur: Postgres database cursor object.
     eid: Unique ID string for event.
     """
@@ -69,7 +70,7 @@ def match_event(cur, eventdict):
         # Select first detection that is returned -- might need to modify
         detection_match = cur.fetchone()[0]
 
-        if (detection_match != 0):
+        if detection_match != 0:
             info_string = "Detection time match for event '%s' is %s" % (eid, detection_match)
             logger.info(info_string)
 
@@ -95,17 +96,36 @@ def match_event(cur, eventdict):
                               eid, detection_match)
                 logger.info(info_string)
 
-                utcnow = datetime.utcnow() # Get current UTC time
-                query = """update event_match set event_id = '%s', match_time = '%s', 
-                        where detection_id = %i;""" % (
-                        eid, str(utcnow), 
-                        detection_match)
-                cur.execute(query)
-                conn.commit()
-                
-                info_string = "Added event_id '%s' and detection_id %i to event_match table" % (
-                              eid, detection_match)
-                logger.info(info_string)
+                match_time = datetime.utcnow() # Get current UTC time
+
+                # Update event_match table with match
+
+                # Check if detection already has row in event_match table
+                query = "select detection_id from event_match where detection_id = " + \
+                        str(detection_match)
+                long_query = query + " union select 0 where not exists (" + query + ");"
+                cur.execute(long_query)
+                found_id = cur.fetchone()[0]
+
+                logger.info("Found_id is %s", str(found_id))
+              
+                # If row exists, update it. Else, create new row for match 
+                if found_id != 0:
+                    cur.execute("update event_match set event_id = %s, match_time = %s" + \
+                                "where detection_id = %s;", (eid, str(match_time), 
+                                str(detection_match)))
+                    conn.commit()
+
+                    logger.info("Updated row in event_match with event '%s'", eid)
+                else:
+                    create_time = datetime.utcnow()
+                    cur.execute("insert into event_match (detection_id, event_id, match_time, " + \
+                                "create_time) values (%s, %s, %s, %s);", 
+                                (str(detection_match), eid, str(match_time), str(create_time)))
+
+                    info_string = "Added event_id '%s' and detection_id %i to event_match table" % (
+                                  eid, detection_match)
+                    logger.info(info_string)
     except Exception as e:
         logger.error("Error encountered while matching event %s to detection", eid, 
                      exc_info=True)
@@ -187,7 +207,7 @@ def call_matcher(options):
     insert_from_dict(cur, eventdict)
 
     # Look for detection that matches event
-    match_event(cur, eventdict)
+    match_event(conn, cur, eventdict)
 
     # Close database connections
     cur.close()
