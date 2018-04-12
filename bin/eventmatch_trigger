@@ -1,8 +1,9 @@
 #!/usr/bin/env python
 
 from argparse import ArgumentParser
+import logging.handlers
 import os.path
-import datetime
+from datetime import datetime
 import sys
 import configparser
 import json
@@ -10,15 +11,19 @@ import urllib.parse
 import urllib.request
 import urllib.error
 import psycopg2
-from ted.trigger_funcs import get_region_name
+# Local imports
+from ted.trigger_funcs import create_logger, get_region_name
+
 """
-eventmatch_trigger.py - An application which adds events to a specified Postgres table.
+eventmatch_trigger.py - An application which adds events to a specified Postgres table, and 
+then attemps to match these events with detections that have been recorded in the database.
 This application presumes that it will be called by the Product Distribution Product Indexer.
 """
-def insert_from_dict(dictionary):
+def insert_from_dict(cur, eventdict):
     """
     Take items from event dictionary and insert into event_ext table in database.
-    dictionary: Event dictionary with the following fields, all containing STRINGS:
+    cur: Postgres database cursor object.
+    eventdict: Event dictionary with the following fields, all containing STRINGS:
                 - type: Message type (usually 'add')
                 - id: Event id
                 - source: Event source ('us', 'ci', etc.)
@@ -30,33 +35,102 @@ def insert_from_dict(dictionary):
                 - loc: Event location (FE Region)
                 - uri: Event location on USGS NEIC web site.
     """
+    try:
+        eventtime = eventdict['time'][:8] + 'T' + eventdict['time'][8:]
+        # Add event to database
+        cur.execute("insert into event_ext (event_time, event_id, event_lat, event_lon," + \
+                    " magnitude) values (%s, %s, %s, %s, %s);", (eventtime, eventdict['id'],
+                    eventdict['lat'], eventdict['lon'], eventdict['mag']))
+        logger.info("Successfully inserted event '%s' into event_ext table", eventdict['id'])
+    except Exception as e:
+        logger.error("Failed to insert event '%s' into event_ext table", eventdict['id'], 
+                     exc_info=True)
 
-    # Connect to database
-    prefix = 'eventMatch'
-    port = config.get('DATABASE',prefix+'_port')
-    user = config.get('DATABASE',prefix+'_user')
-    dbname = config.get('DATABASE',prefix+'_name')
-    password = config.get('DATABASE',prefix+'_password')
-
-    conn = psycopg2.connect(dbname=dbname, user=user, port=port, password=password)
-    conn.autocommit = True
-    cur = conn.cursor()
+def match_event(conn, cur, eventdict):
+    """
+    Checks detection_ext table for detection which matches time and location of event. 
+    Updates event_match table with event and detection ids once a match is found.
+    conn: Postrgres database connection object.
+    cur: Postgres database cursor object.
+    eid: Unique ID string for event.
+    """
+    eid = eventdict['id']
+    event_lon = float(eventdict['lon'])
+    event_lat = float(eventdict['lat'])
 
     try:
-        eventtime = dictionary['time'][:8] + 'T' + dictionary['time'][8:]
-        # Add event to database
-        cur.execute("INSERT INTO event_ext (event_time, event_id, event_lat, event_lon," + \
-                    " magnitude) VALUES (%s, %s, %s, %s, %s);", (eventtime, dictionary['id'],
-                    dictionary['lat'], dictionary['lon'], dictionary['mag']))
-        f.write("%s: Successfully inserted dictionary for event %s into event_ext table.\n" %
-                (str(tnow),str(dictionary['id'])))
-    except Exception as e:
-        f.write("%s: Failed to insert event dictionary into event_ext table. Error %s\n" % str(tnow),str(e))
-    finally:
-        cur.close()
-        conn.close()
+        # Check for detections close in time to event
+        query = "select detection_id from detection_ext, event_ext where event_id = '" + \
+                eid + "' and detection_time >= event_time and detection_time < " + \
+                "(event_time + interval '180' second)"
+        long_query = query + " union select 0 where not exists (" + \
+                             query + ");"
+        cur.execute(long_query)
 
-def call_inserter(options):
+        # Select first detection that is returned -- might need to modify
+        detection_match = cur.fetchone()[0]
+
+        if detection_match != 0:
+            info_string = "Detection time match for event '%s' is %s" % (eid, detection_match)
+            logger.info(info_string)
+
+            # Get detection coordinates
+            query = """select detection_lat, detection_lon from detection_ext where 
+                    detection_id = %i""" % detection_match
+            cur.execute(query)
+            detection_lat, detection_lon = cur.fetchone()
+            detection_lat = float(detection_lat)
+            detection_lon = float(detection_lon)
+
+            info_string = "Detection match coordinates - %s, %s" % (
+                          str(detection_lat), str(detection_lon))
+            logger.info(info_string)
+
+            # Check if detection is within 400 sq km of event
+            # 400 km equivalent to about 4.0 degrees lat and lon
+            if (abs(event_lon - detection_lon) <= 4.0 and abs(event_lat - detection_lat) \
+                <= 4.0):
+                # Write event ID to corresponding detection in event_match
+                # Write time when match was found to event_match table
+                info_string = "Event %s and detection %i are a match" % (
+                              eid, detection_match)
+                logger.info(info_string)
+
+                match_time = datetime.utcnow() # Get current UTC time
+
+                # Update event_match table with match
+
+                # Check if detection already has row in event_match table
+                query = "select detection_id from event_match where detection_id = " + \
+                        str(detection_match)
+                long_query = query + " union select 0 where not exists (" + query + ");"
+                cur.execute(long_query)
+                found_id = cur.fetchone()[0]
+
+                logger.info("Found_id is %s", str(found_id))
+              
+                # If row exists, update it. Else, create new row for match 
+                if found_id != 0:
+                    cur.execute("update event_match set event_id = %s, match_time = %s" + \
+                                "where detection_id = %s;", (eid, str(match_time), 
+                                str(detection_match)))
+                    conn.commit()
+
+                    logger.info("Updated row in event_match with event '%s'", eid)
+                else:
+                    create_time = datetime.utcnow()
+                    cur.execute("insert into event_match (detection_id, event_id, match_time, " + \
+                                "create_time) values (%s, %s, %s, %s);", 
+                                (str(detection_match), eid, str(match_time), str(create_time)))
+
+                    info_string = "Added event_id '%s' and detection_id %i to event_match table" % (
+                                  eid, detection_match)
+                    logger.info(info_string)
+    except Exception as e:
+        logger.error("Error encountered while matching event %s to detection", eid, 
+                     exc_info=True)
+
+def call_matcher(options):
     """
     Called by __main__. Creates event dictionary and calls insert_from_dict(). 
     options: Dictionary with the following fields, all containing STRINGS:
@@ -78,38 +152,69 @@ def call_inserter(options):
     """
     # If event is not an event add or event update trigger, exit application
     if options['action'] not in ['EVENT_ADDED','EVENT_UPDATED']:
-        f.write('%s: Ignoring all actions but "EVENT_ADDED" and "EVENT_UPDATED".  Exiting.\n' % str(tnow))
-        f.close()
+        logger.info("Ignoring all actions but 'EVENT_ADDED' and 'EVENT_UPDATED'. Exiting")
         sys.exit(0)
 
     # If network source is in ignoreregions list, exit application
+    ignoreregions = config.get('SETUP','ignoreregions').split(',')
     if options['source'].lower() in ignoreregions:
-        f.write('%s: Ignoring region "%s".  Exiting.\n' % (str(tnow),options['source'].lower()))
-        f.close()
+        logger.info("Ignoring region '%s'. Exiting", options['source'].lower())
         sys.exit(0)
 
     # If event code is not same as preferred event ID, exit application
     if options['code'] != options['preferredID']:
-        f.write('%s: Ignoring non-preferred ID "%s".  Exiting.\n' % (str(tnow),options['code']))
-        f.close()
+        logger.info("Ignoring non-preferred ID '%s'. Exiting", options['code'])
         sys.exit(0)
 
-    eventdt = datetime.datetime.strptime(options['preferredEventTime'],'%Y-%m-%dT%H:%M:%S.%fZ')
+    try:
+        eventdt = datetime.strptime(options['preferredEventTime'],'%Y-%m-%dT%H:%M:%S.%fZ')
 
-    eventdict = {}
-    eventdict['type'] = 'add'
-    eventdict['id'] = options['preferredID'].lower()
-    eventdict['source'] = options['source'].lower()
-    eventdict['time'] = eventdt.strftime('%Y%m%d%H%M%S.00')
-    eventdict['lat'] = '%.4f' % float(options['preferredLatitude'])
-    eventdict['lon'] = '%.4f' % float(options['preferredLongitude'])
-    eventdict['depth'] = '%.1f' % float(options['preferredDepth'])
-    eventdict['mag'] = '%.1f' % float(options['preferredMagnitude'])
-    eventdict['loc'] = get_region_name(float(options['preferredLatitude']),float(options['preferredLongitude']))
-    urlt = config.get('SETUP','urltemplate')
-    eventdict['uri'] = urlt.replace('[EVENT]',options['preferredID'].lower())
+        eventdict = {}
+        eventdict['type'] = 'add'
+        eventdict['id'] = options['preferredID'].lower()
+        eventdict['source'] = options['source'].lower()
+        eventdict['time'] = eventdt.strftime('%Y%m%d%H%M%S.00')
+        eventdict['lat'] = '%.4f' % float(options['preferredLatitude'])
+        eventdict['lon'] = '%.4f' % float(options['preferredLongitude'])
+        eventdict['depth'] = '%.1f' % float(options['preferredDepth'])
+        eventdict['mag'] = '%.1f' % float(options['preferredMagnitude'])
+        eventdict['loc'] = get_region_name(float(options['preferredLatitude']),float(options['preferredLongitude']))
+        urlt = config.get('SETUP','urltemplate')
+        eventdict['uri'] = urlt.replace('[EVENT]',options['preferredID'].lower())
+    except Exception as e:
+        logger.error("Error caught while creating event dictionary", exc_info=True)
 
-    insert_from_dict(eventdict)
+    # Connect to database
+    prefix = 'testDB'
+    try:
+        port = config.get('DATABASE',prefix+'_port')
+        user = config.get('DATABASE',prefix+'_user')
+        dbname = config.get('DATABASE',prefix+'_name')
+        password = config.get('DATABASE',prefix+'_password')
+    except Exception as e:
+        error_string = "Error getting database arguments from config file. Check that " + \
+                       "prefix " + prefix + " matches values in " + str(configfile)
+        logger.error(error_string, exc_info=True)
+
+    try:
+        conn = psycopg2.connect(dbname=dbname, user=user, port=port, password=password)
+        conn.autocommit = True
+        cur = conn.cursor()
+    except Exception as e:
+        logger.error("Error connecting to database", exc_info=True)
+
+    # Add event to database
+    insert_from_dict(cur, eventdict)
+
+    # Look for detection that matches event
+    match_event(conn, cur, eventdict)
+
+    # Close database connections
+    cur.close()
+    conn.close()
+
+    # Exit application
+    sys.exit(0)
 
 if __name__ == '__main__':
     parser = ArgumentParser(prog='triggerEventMatch', usage ='%(prog)s [options]')
@@ -186,6 +291,10 @@ if __name__ == '__main__':
         parser.print_help()
         sys.exit(0)
 
+    # Check that there is a preferred magnitude (fix to recurring dictionary error)
+    if options['preferredMagnitude'] == 'null':
+        sys.exit(0)
+
     # Read in config file
     homedir = os.path.dirname(os.path.abspath(__file__))
     configfile = os.path.join(homedir,'configEventMatch.ini')
@@ -194,13 +303,13 @@ if __name__ == '__main__':
         sys.exit(1)
 
     config = configparser.ConfigParser()
-    config.readfp(open(configfile))
+    config.read_file(open(configfile))
 
     if not config.has_section('SETUP'):
         print("Config file \"%s\" is missing section \"SETUP\".  Exiting", configfile)
         sys.exit(1)
 
-    reqoptions = ['magthresh','ignoreregions','logging_on','logfile']
+    reqoptions = ['ignoreregions','logging_level','logfile']
 
     missing = []
     for option in reqoptions:
@@ -210,18 +319,13 @@ if __name__ == '__main__':
         print("Config file \"%s\" is missing SETUP options \"%s\".  Exiting", configfile,','.join(missing))
         sys.exit(1)
 
-    magthresh = float(config.get('SETUP','magthresh'))
-    ignoreregions = config.get('SETUP','ignoreregions').split(',')
-    loggingOn = bool(int(config.get('SETUP','logging_on')))
-    logfile = os.path.join(homedir,config.get('SETUP','logfile'))
+    # Instruct logging module when to back up logfile and create new, empty one
+    # Logfile will be archived once a week on Monday, and only 8 will be kept at a time.
+    bkup_inttype = 'W0' # W0 = Monday
+    bkup_interval = 1
+    bkup_count = 8
+    bkup_suffix = '%Y-%m-%d_%H:%M:%S'
+    # Create logfile
+    logger = create_logger(bkup_inttype, bkup_interval, bkup_count, bkup_suffix)
 
-    # Set up log file
-    if loggingOn:
-        f = open(logfile,'at')
-    tnow = datetime.datetime.now() # For use in log file
-
-    call_inserter(options)    
-
-    # Close logfile and exit application
-    f.close()
-    sys.exit(0)
+    call_matcher(options)    

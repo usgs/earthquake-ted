@@ -1,0 +1,326 @@
+#!/usr/bin/env python
+
+import configparser
+import logging.handlers
+import os.path
+import psycopg2
+import tweepy
+import json
+from datetime import datetime
+from datetime import timedelta
+import os
+# Local imports
+from ted.trigger_funcs import create_logger
+
+"""
+tweet_fetcher - An application for establishing a tweet stream using the Twitter API, which 
+filters out tweets with earthquake keywords and adds these tweets to a Postgres table.
+"""
+def stream_tweets():
+    """
+    Establishes connection to Twitter using API credentials and StdOutListener()
+    class. Filters Twitter stream for tweets containing any of the specified 
+    earthquake keywords in the Postgres "keyword" table.
+    """
+    # Get streaming API user credentials
+    consumer_key = config.get('TWITTER', 'twitter_apikey')
+    consumer_secret = config.get('TWITTER', 'twitter_apisecret')
+    access_token = config.get('TWITTER', 'twitter_accesstoken')
+    access_token_secret = config.get('TWITTER', 'twitter_accesstoken_secret')
+
+    # Authenticate Twitter API connection
+    l = StdOutListener()
+    try:
+        auth = tweepy.OAuthHandler(consumer_key, consumer_secret)
+        auth.set_access_token(access_token, access_token_secret)
+        stream = tweepy.Stream(auth, l)
+    except Exception as e:
+        logger.error("Error encountered while connecting to Twitter API", 
+                     exc_info=True)
+ 
+    # Get earthquake keywords
+    try:
+        logger.info("Connected to tweet stream")
+
+        cur.execute("SELECT title FROM keyword;")
+        quake_words = cur.fetchall()
+    except Exception as e:
+        logger.error("Error encountered while fetching earthquake keywords",
+                     exc_info=True)
+
+    keywords = []
+    for word in quake_words:
+        keywords.append(word[0])
+
+    # Filter Twitter Streams to capture data by certain keywords
+    stream.filter(track=keywords)
+
+class StdOutListener(tweepy.StreamListener):
+    def on_status(self, tweet):
+        """
+        Called by Twitter stream created in stream_tweets() method.
+        Checks that new tweets coming through stream listener are not 
+        retweets. If not a retweet, will call process_tweet().
+
+        self: required parameter for StdOutListener() methods
+        tweet: new tweet coming in through listener (TWEET object)
+        """
+        # Do not process retweets
+        if hasattr(tweet, 'retweeted_status'):
+            return
+        process_tweet(tweet)
+
+    def on_error(self, status_code):
+        """
+        Detects errors coming through stream listener; writes to
+        logfile if error code corresponds to a rate limiting error 
+        and keeps the stream running or all other error codes.
+
+        self: required parameter for StdOutListener() methods
+        status_code: error code returned by stream listener (INT)
+        """
+        if status_code == 420:
+            logger.warning("We are being rate limited by Twitter")
+            return False
+
+def process_tweet(tweet):
+    """
+    Called by on_status() in StdOutListener() class when a new 
+    tweet is filtered through Twitter stream. Takes TWEET object 
+    and reads it into a JSON object, and uses both objects to read
+    important information about tweet into dictionary called 
+    tweet_dict. Finally, calls insert_from_dict() method.
+
+    tweet: TWEET object containing descriptive information about
+           earthquake tweet.
+    """
+    # Get tweet into json format
+    tweet_json_string = json.dumps(tweet._json)
+    tweet_json = json.loads(tweet_json_string)
+
+    # Read data into dictionary
+    tweet_dict = {}
+    tweet_dict = {'twitter_date' : tweet.created_at,
+                  'twitter_id' : tweet.id_str,
+                  'location_string' : tweet.user.location, 
+                  'text' : tweet.text, 
+                  'location_lon' : None,
+                  'location_lat' : None,
+                  'coordinate_type' : None,
+                  'media_type' : None, 
+                  'media_display_url' : None,
+                  'word_count' : 0,
+                  'lang' : tweet.lang,
+                  'time_zone' : tweet.user.time_zone,
+                  'utc_offset' : tweet.user.utc_offset}
+
+    # Remove single quotes from text and time zone to prevent sql error
+    tweet_dict['text'] = tweet_dict['text'].replace("'", " ")
+    if tweet.user.time_zone is not None:
+        tweet_dict['time_zone'] = tweet_dict['time_zone'].replace("'", " ") 
+
+    # Truncate long text for database
+    tweet_dict['text'] = tweet_dict['text'][:289]
+ 
+    if tweet.user.location is not None:
+        # Remove single quotes to prevent sql error
+        tweet_dict['location_string'] = tweet_dict['location_string'].replace("'", " ")
+        # Truncate long location_string for database
+        tweet_dict['location_string'] = tweet_dict['location_string'][:99]
+  
+    # Look for tweet coordinates
+    if tweet.coordinates is not None:
+        tweet_dict['coordinate_type'] = 'message'
+        tweet_dict['location_lon'] = tweet.coordinates['coordinates'][0]
+        tweet_dict['location_lat'] = tweet.coordinates['coordinates'][1]
+    elif tweet.place is not None:
+        tweet_dict['coordinate_type'] = 'profile'
+        # Get bounding box coordinates, average lat and lon to get one pair
+        longitude_sum = 0.00
+        latitude_sum = 0.00
+        for i in range(0, 4):
+           this_longitude = tweet_json['place']['bounding_box']['coordinates'][0][i][0]
+           this_latitude = tweet_json['place']['bounding_box']['coordinates'][0][i][1] 
+           longitude_sum = this_longitude + longitude_sum
+           latitude_sum = this_latitude + latitude_sum
+        tweet_dict['location_lon'] = longitude_sum / 4
+        tweet_dict['location_lat'] = latitude_sum / 4
+
+    # Check for photos or videos
+    if 'media' in tweet.entities:
+       tweet_dict['media_type'] = tweet.entities['media'][0]['type']
+       tweet_dict['media_display_url'] = tweet.entities['media'][0]['media_url_https']
+    
+    # Get word count
+    words = tweet.text.split()
+    tweet_dict['word_count'] = len(words)
+
+    # Check that no items in dictionary are empty
+    for key, value in tweet_dict.items():
+       if value is None:
+           tweet_dict[key] = 'null'
+
+    global tweetcount
+    global tweetrate_time
+    
+    # Add to database
+    insert_from_dict(tweet_dict)
+    tweetcount += 1
+
+    # Record tweets per 5 minutes in log file
+    if datetime.now() >= (tweetrate_time + timedelta(minutes=5)):
+         logger.info("Recording %i tweets every 5 minutes", tweetcount)
+         tweetcount = 0
+         tweetrate_time = datetime.now()
+
+def insert_from_dict(tweet_dict):
+    """Called by process_tweet(). Takes tweet dictionary and inserts into 
+       "message" table in Postgres. 
+       
+       tweet_dict: Tweet dictionary with the following fields: 
+                   (STRING unless otherwise noted)
+                   - twitter_date: Date tweet was created 
+                   - location_string: Location associated with user profile
+                   - text: Tweeted text
+                   - location_lon: Longitude coordinate of tweet, either from 
+                     user profile or tweet itself.
+                   - location_lat: Latitude coordinate of tweet, either from 
+                     user profile or tweet itself.
+                   - coordinate_type: source of tweet coordinates - either
+                     'message' or 'profile'
+                   - media_type: Type of additional media included in tweet,
+                     e.g. 'photo', 'video'
+                   - media_display_url: URL address of additional media.
+                   - word_count: Number of words in tweeted text. (INT)
+                   - lang: Two-character string describing language tweet was 
+                     written in.
+                   - time_zone: String describing user's time zone.
+                   - utc_offset: String of an integer describing user's UTC offset.
+    """ 
+    date_created = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S.00')
+    lang = tweet_dict['lang']
+    location_lat = tweet_dict['location_lat']
+    location_lon = tweet_dict['location_lon']
+    location_string = tweet_dict['location_string']
+    location_source = tweet_dict['coordinate_type']
+    media_display_url = tweet_dict['media_display_url']
+    media_type = tweet_dict['media_type']
+    message_date = tweet_dict['twitter_date'].strftime('%Y-%m-%d %H:%M:%S.00')
+    message_id = tweet_dict['twitter_id']
+    message_source = "Twitter"
+    message_text = tweet_dict['text']
+    time_zone = tweet_dict['time_zone']
+    utc_offset = tweet_dict['utc_offset']
+    word_count = tweet_dict['word_count']
+
+    try:
+        query = ("""INSERT INTO message (date_created, lang, message_date, message_id, 
+                 message_source, message_text, utc_offset, word_count) 
+                 VALUES ('%s', '%s', '%s', '%s', '%s', '%s', %s, %i);""" % 
+                 (date_created, lang, message_date, message_id, message_source, 
+                  message_text, utc_offset, word_count))
+        cur.execute(query)
+
+        # Add additional info which is only present for some tweets
+
+        # Determine which columns have info 
+        have_timezone = False
+        have_location = False
+        have_media_type = False
+        have_location_coords = False
+
+        if time_zone != 'null':
+            have_timezone = True
+        if location_string != 'null':
+            have_location = True
+        if media_type != 'null':
+            have_media_type = True
+        if location_lon != 'null' and location_lat != 'null':
+            have_location_coords = True
+
+        # Update these columns -- cannot perform more than one update or deadlock occurs
+        if any([have_timezone, have_location, have_media_type, have_location_coords]):
+            query = "UPDATE message SET "
+            have_other_update = False
+
+            if have_timezone:
+                query = query + "time_zone = '%s'" % time_zone
+                have_other_update = True
+            if have_location:
+                if have_other_update:
+                    query = query + ", "
+                query = query + "location_string = '%s'" % location_string
+                have_other_update = True
+            if have_media_type:
+                if have_other_update:
+                    query = query + ", "
+                query = query + "media_display_url = '%s', media_type = '%s'" % (
+                              media_display_url, media_type)
+                have_other_update = True
+            if have_location_coords:
+                if have_other_update:
+                    query = query + ", "
+                query = query + """location_source = '%s', location_lon = %s, 
+                            location_lat = %s""" % (
+                            location_source, location_lon, 
+                            location_lat)
+                have_other_update = True
+
+            query = query + " WHERE message_id = '%s';" % message_id
+            cur.execute(query)
+    except Exception as e:
+        logger.error("Error encountered while adding tweet to message table",
+                     exc_info=True)
+
+if __name__ == '__main__':
+    # Read in config file
+    homedir = os.path.dirname(os.path.abspath(__file__))
+    configfile = os.path.join(homedir, 'configFetcher.ini')
+    if not os.path.isfile(configfile):
+        print("Config file '%s' does not exist. Exiting\n" % configfile)
+        sys.exit(1)
+
+    config = configparser.ConfigParser()
+    config.read_file(open(configfile))
+   
+    missing = [] 
+    if not config.has_section('SETUP'):
+        print("Config file '%s' is missing section 'SETUP'. Exiting\n" % configfile)
+        sys.exit(1)
+    for option in ['logging_level', 'logfile']:
+        if not config.has_option('SETUP', option):
+            missing.append(option)
+        if len(missing):
+            print("Config file '%s' is missing SETUP options '%s'. Exiting\n" % 
+                  (configfile, ','.join(missing)))
+
+    # Instruct logging module when to back up logfile and create new, empty one
+    # Logfile will be archived every day at midnight, and only 50 will be kept at a time.
+    bkup_inttype = 'midnight' # will back up at midnight each day
+    bkup_interval = 0
+    bkup_count = 50
+    bkup_suffix = '%Y-%m-%d_%H:%M:%S'
+    # Create logfile
+    logger = create_logger(bkup_inttype, bkup_interval, bkup_count, bkup_suffix)
+
+
+    # Connect to test database
+    prefix = 'testdb'
+    port = config.get('DATABASE', prefix+'_port')
+    user = config.get('DATABASE', prefix+'_user')
+    dbname = config.get('DATABASE', prefix+'_name')
+    password = config.get('DATABASE', prefix+'_password')
+
+    conn = psycopg2.connect(dbname=dbname, user=user, port=port, password=password)
+    cur = conn.cursor()
+    conn.autocommit = True
+
+    # Variables used later on
+    tweetrate_time = datetime.now()
+    tweetcount = 0
+
+    stream_tweets()
+
+    # Close database connections
+    conn.close()
+    cur.close()
