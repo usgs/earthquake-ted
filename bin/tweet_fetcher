@@ -10,12 +10,13 @@ from datetime import datetime
 from datetime import timedelta
 import os
 # Local imports
-from ted.trigger_funcs import create_logger
+from trigger_funcs import create_logger, get_region_name
 
 """
 tweet_fetcher - An application for establishing a tweet stream using the Twitter API, which 
 filters out tweets with earthquake keywords and adds these tweets to a Postgres table.
 """
+
 def stream_tweets():
     """
     Establishes connection to Twitter using API credentials and StdOutListener()
@@ -42,7 +43,7 @@ def stream_tweets():
     try:
         logger.info("Connected to tweet stream")
 
-        cur.execute("SELECT title FROM keyword;")
+        cur.execute("select title from keyword;")
         quake_words = cur.fetchall()
     except Exception as e:
         logger.error("Error encountered while fetching earthquake keywords",
@@ -214,9 +215,9 @@ def insert_from_dict(tweet_dict):
     word_count = tweet_dict['word_count']
 
     try:
-        query = ("""INSERT INTO message (date_created, lang, message_date, message_id, 
+        query = ("""insert into message (date_created, lang, message_date, message_id, 
                  message_source, message_text, utc_offset, word_count) 
-                 VALUES ('%s', '%s', '%s', '%s', '%s', '%s', %s, %i);""" % 
+                 values ('%s', '%s', '%s', '%s', '%s', '%s', %s, %i);""" % 
                  (date_created, lang, message_date, message_id, message_source, 
                   message_text, utc_offset, word_count))
         cur.execute(query)
@@ -240,7 +241,7 @@ def insert_from_dict(tweet_dict):
 
         # Update these columns -- cannot perform more than one update or deadlock occurs
         if any([have_timezone, have_location, have_media_type, have_location_coords]):
-            query = "UPDATE message SET "
+            query = "update message set "
             have_other_update = False
 
             if have_timezone:
@@ -266,7 +267,7 @@ def insert_from_dict(tweet_dict):
                             location_lat)
                 have_other_update = True
 
-            query = query + " WHERE message_id = '%s';" % message_id
+            query = query + " where message_id = '%s';" % message_id
             cur.execute(query)
     except Exception as e:
         logger.error("Error encountered while adding tweet to message table",
@@ -275,7 +276,7 @@ def insert_from_dict(tweet_dict):
 if __name__ == '__main__':
     # Read in config file
     homedir = os.path.dirname(os.path.abspath(__file__))
-    configfile = os.path.join(homedir, 'configFetcher.ini')
+    configfile = os.path.join(homedir, 'fetcher_config.ini')
     if not os.path.isfile(configfile):
         print("Config file '%s' does not exist. Exiting\n" % configfile)
         sys.exit(1)
@@ -294,15 +295,19 @@ if __name__ == '__main__':
             print("Config file '%s' is missing SETUP options '%s'. Exiting\n" % 
                   (configfile, ','.join(missing)))
 
+    # Create dictionary to use when passing parameters into create_logger()
+    logdict = {}
     # Instruct logging module when to back up logfile and create new, empty one
     # Logfile will be archived every day at midnight, and only 50 will be kept at a time.
-    bkup_inttype = 'midnight' # will back up at midnight each day
-    bkup_interval = 0
-    bkup_count = 50
-    bkup_suffix = '%Y-%m-%d_%H:%M:%S'
-    # Create logfile
-    logger = create_logger(bkup_inttype, bkup_interval, bkup_count, bkup_suffix)
+    logdict['bkup_inttype'] = 'midnight' # will back up at midnight each day
+    logdict['bkup_interval'] = 0
+    logdict['bkup_count'] = 50
+    logdict['bkup_suffix'] = '%Y-%m-%d_%H:%M:%S'
+    logdict['homedir'] = homedir
+    logdict['config'] = config
 
+    # Create logfile
+    logger = create_logger(logdict)
 
     # Connect to test database
     prefix = 'testdb'

@@ -17,13 +17,14 @@ import urllib.error
 import json
 import psycopg2
 import tweepy
-# Local imports
-from ted.trigger_funcs import create_logger, get_region_name
+# Local imports 
+from trigger_funcs import create_logger, get_region_name
 
 """
-tweet_trigger.py - An application for tweeting new earthquake events.
+tweet_trigger - An application for tweeting new earthquake events.
 This application presumes that it will be called by the Product Distribution Product Indexer.
 """
+
 def check_event(eventdict):
     """
     Check that event should be tweeted. 
@@ -127,15 +128,15 @@ def get_short_url(eventdict):
                - uri: Event location on USGS NEIC web site.
     Returns url string. If an error is encountered, this will return the unshortened url.
     """
-    bitlyusername = config.get('BITLY', 'bitly_username')
-    bitlyapikey = config.get('BITLY', 'bitly_apikey')
+    gousa_username = config.get('BITLY', 'gousa_username')
+    gousa_apikey = config.get('BITLY', 'gousa_apikey')
     longurl = eventdict['uri'].replace('://','%3A%2F%2F')
     longurl = longurl.replace('/','%2F')
 
     # Get url to connect to go.usa.gov api
     http = config.get('SETUP', 'short_urltemplate')
-    http = http.replace('[LOGIN]', bitlyusername)
-    http = http.replace('[KEY]', bitlyapikey)
+    http = http.replace('[LOGIN]', gousa_username)
+    http = http.replace('[KEY]', gousa_apikey)
     http = http.replace('[LONGURL]', longurl)
 
     eid = eventdict['id']
@@ -290,7 +291,10 @@ def call_tweeter(options):
     """
     # If event is not an event add or event update trigger, exit application
     if options['action'] not in ['EVENT_ADDED', 'EVENT_UPDATED']:
-        logger.info("Ignoring all actions but 'EVENT_ADDED' and 'EVENT_UPDATED'.  Exiting")
+        info_string = """Unacceptable action '%s'. Ignoring all actions but 'EVENT_ADDED' and
+                         'EVENT_UPDATED'. Exiting""" % options['action']
+        logger.info(info_string)
+        # logger.info("Ignoring all actions but 'EVENT_ADDED' and 'EVENT_UPDATED'. Exiting")
         close_all()
         sys.exit(0)
 
@@ -339,7 +343,7 @@ def call_tweeter(options):
         sys.exit(0)
 
 if __name__ == '__main__':
-    parser = ArgumentParser(prog='triggerTweeter', usage='%(prog)s [options]')
+    parser = ArgumentParser(prog='tweet_trigger', usage='%(prog)s [options]')
 
     # Product Indexer command line API options
     parser.add_argument("--directory", dest="directory",
@@ -418,7 +422,7 @@ if __name__ == '__main__':
 
     # Read in config file
     homedir = os.path.dirname(os.path.abspath(__file__))
-    configfile = os.path.join(homedir, 'configTweeter.ini')
+    configfile = os.path.join(homedir, 'tweet_config.ini')
     if not os.path.isfile(configfile):
         print("Config file '%s' does not exist.  Exiting" % configfile)
         sys.exit(1)
@@ -440,14 +444,19 @@ if __name__ == '__main__':
         print("Config file '%s' is missing SETUP options '%s'.  Exiting" % (configfile, ','.join(missing)))
         sys.exit(1)
 
+    # Create dictionary to use when passing parameters into create_logger()
+    logdict = {}
     # Instruct logging module when to back up logfile and create new, empty one
-    # Logfile will be archived once a week on Monday, and only 8 will be kept at a time.
-    bkup_inttype = 'W0' # W0 = Monday
-    bkup_interval = 1
-    bkup_count = 8
-    bkup_suffix = '%Y-%m-%d_%H:%M:%S'
+    # Logfile will be archived once a week on Sunday, and only 8 will be kept at a time.
+    logdict['bkup_inttype'] = 'W6' # W6 = Sunday
+    logdict['bkup_interval'] = 1
+    logdict['bkup_count'] = 8
+    logdict['bkup_suffix'] = '%Y-%m-%d_%H:%M:%S'
+    logdict['homedir'] = homedir
+    logdict['config'] = config
+
     # Create logfile
-    logger = create_logger(bkup_inttype, bkup_interval, bkup_count, bkup_suffix)
+    logger = create_logger(logdict)
 
     # Connect to database
     prefix = 'testdb'
@@ -463,6 +472,5 @@ if __name__ == '__main__':
     # Variables used later on
     utcnow = datetime.utcnow()
     eventdatetime = datetime.strptime(options['preferredEventTime'], '%Y-%m-%dT%H:%M:%S.%fZ')
-    
+
     call_tweeter(options)    
- 
