@@ -20,7 +20,7 @@ Two tables must exist in Postgres for events to be matched to detections:
 
 If these tables have not been created, first activate the PostgreSQL Test_DB from the terminal by typing:
 
-    psql -D <testDB_name> -u <testDB_user> -p <testDB_port>
+    psql -d <testDB_name> -U <testDB_user> -p <testDB_port>
 
 The values in brackets correspond to the values with the same name in eventmatch_config.ini. The user will also be asked to enter a password; this is the same password that is used for the TED Dev database.
 

@@ -15,13 +15,13 @@ If the environment has not been created yet or does not exist, type:
 
 The tweet_audit tables must exist in Postgres. If this table has not been created yet, activate the PostgreSQL Test_DB from the terminal by typing:
 
-    psql -D ted -u ted -p 5433
+    psql -d <testDB_name> -U <testDB_user> -p <testDB_port>
 
 And entering the same password that is used for the TED Dev database.
 Create the tweet_audit table by typing:
 
     create table tweet_audit(
-        event_id character varying(40),
+        event_id character varying(40) not null,
         event_lat numeric(8,5),
         event_lon numeric(8,5),
         event_time timestamp without time zone,
