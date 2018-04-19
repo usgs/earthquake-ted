@@ -15,5 +15,6 @@ Install Notes
 
 3) install this project (ted trigger code)
     git clone <thisProject>
+    cd ted
     ./install.sh
     

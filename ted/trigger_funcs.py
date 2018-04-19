@@ -1,29 +1,38 @@
 #!/usr/bin/env python
 
+import os.path
+import configparser
+import logging.handlers
+
 """
 trigger_funcs.py - Functions used in trigger.py, the application for generating TED messages.
 """
 
-import os.path
-import logging.handlers
-import urllib.request
-import json
-
-def create_logger(bkup_inttype, bkup_interval, bkup_count, bkup_suffix):
+def create_logger(d):
     """
     Creates logfile using Python's logging module and saves to a 'log' directory. Uses timed 
     rotating file handler to archive logfile under a different name within the log directory, 
     create a new empty one, and delete all archived logfiles once a maximum number of archived
     files has been reached. 
     Returns logger object.
-    bkup_inttype: Character, type of interval logfile will be archived after (i.e., 'D' is 
-                  day, 'M' is month)
-    bkup_interval = Integer, amount of specified interval logfile will be archived after 
-                    (i.e., if bkup_inttype = 'D' and bkup_interval = 30, the file will be 
-                    archived after 30 days)
-    bkup_count = Integer, how many backup logfiles to keep until all will be deleted 
-    bkup_suffix = String, date format that will be appended to logfile when it is archived
+    d: Dictionary containing the following fields
+       - bkup_inttype One character designating type of interval logfile will be archived 
+         after (i.e., 'D' is day, 'M' is month)
+       - bkup_interval Integer, amount of specified interval logfile will be archived after 
+         (i.e., if bkup_inttype = 'D' and bkup_interval = 30, the file will be 
+         archived after 30 days)
+       - bkup_count Integer, how many backup logfiles to keep until all will be deleted 
+       - bkup_suffix String, date format that will be appended to logfile when it is archived
+       - homedir String, filepath
+       - config ConfigParser object, points to config file
     """
+    homedir = d['homedir']
+    config = d['config']
+    bkup_inttype = d['bkup_inttype']
+    bkup_interval = d['bkup_interval']
+    bkup_count = d['bkup_count']
+    bkup_suffix = d['bkup_suffix']
+
     # Define logfile location and create logger object
     if not os.path.exists('log'):
         os.makedirs('log')

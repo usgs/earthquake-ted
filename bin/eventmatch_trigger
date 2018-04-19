@@ -12,13 +12,14 @@ import urllib.request
 import urllib.error
 import psycopg2
 # Local imports
-from ted.trigger_funcs import create_logger, get_region_name
+from trigger_funcs import create_logger, get_region_name
 
 """
-eventmatch_trigger.py - An application which adds events to a specified Postgres table, and 
+eventmatch_trigger - An application which adds events to a specified Postgres table, and 
 then attemps to match these events with detections that have been recorded in the database.
 This application presumes that it will be called by the Product Distribution Product Indexer.
 """
+
 def insert_from_dict(cur, eventdict):
     """
     Take items from event dictionary and insert into event_ext table in database.
@@ -76,7 +77,7 @@ def match_event(conn, cur, eventdict):
 
             # Get detection coordinates
             query = """select detection_lat, detection_lon from detection_ext where 
-                    detection_id = %i""" % detection_match
+                    detection_id = %s""" % str(detection_match)
             cur.execute(query)
             detection_lat, detection_lon = cur.fetchone()
             detection_lat = float(detection_lat)
@@ -92,8 +93,8 @@ def match_event(conn, cur, eventdict):
                 <= 4.0):
                 # Write event ID to corresponding detection in event_match
                 # Write time when match was found to event_match table
-                info_string = "Event %s and detection %i are a match" % (
-                              eid, detection_match)
+                info_string = "Event %s and detection %s are a match" % (
+                              eid, str(detection_match))
                 logger.info(info_string)
 
                 match_time = datetime.utcnow() # Get current UTC time
@@ -123,8 +124,8 @@ def match_event(conn, cur, eventdict):
                                 "create_time) values (%s, %s, %s, %s);", 
                                 (str(detection_match), eid, str(match_time), str(create_time)))
 
-                    info_string = "Added event_id '%s' and detection_id %i to event_match table" % (
-                                  eid, detection_match)
+                    info_string = "Added event_id '%s' and detection_id %s to event_match table" % (
+                                  eid, str(detection_match))
                     logger.info(info_string)
     except Exception as e:
         logger.error("Error encountered while matching event %s to detection", eid, 
@@ -152,7 +153,10 @@ def call_matcher(options):
     """
     # If event is not an event add or event update trigger, exit application
     if options['action'] not in ['EVENT_ADDED','EVENT_UPDATED']:
-        logger.info("Ignoring all actions but 'EVENT_ADDED' and 'EVENT_UPDATED'. Exiting")
+        info_string = """Unacceptable action '%s'. Ignoring all actions but 'EVENT_ADDED' and
+                         'EVENT_UPDATED'. Exiting""" % options['action']
+        logger.info(info_string)
+        # logger.info("Ignoring all actions but 'EVENT_ADDED' and 'EVENT_UPDATED'. Exiting")
         sys.exit(0)
 
     # If network source is in ignoreregions list, exit application
@@ -217,7 +221,7 @@ def call_matcher(options):
     sys.exit(0)
 
 if __name__ == '__main__':
-    parser = ArgumentParser(prog='triggerEventMatch', usage ='%(prog)s [options]')
+    parser = ArgumentParser(prog='eventmatch_trigger', usage ='%(prog)s [options]')
 
     # Product Indexer command line API options
     parser.add_argument("--directory", dest="directory",
@@ -282,12 +286,12 @@ if __name__ == '__main__':
     options = vars(validargs)
 
     # Print help menu and exit if none of options are defined
-    foundOne = False
+    foundone = False
     for argvalue in options.values():
         if argvalue != None:
-             foundOne = True
+             foundone = True
              break
-    if not foundOne:
+    if not foundone:
         parser.print_help()
         sys.exit(0)
 
@@ -297,7 +301,7 @@ if __name__ == '__main__':
 
     # Read in config file
     homedir = os.path.dirname(os.path.abspath(__file__))
-    configfile = os.path.join(homedir,'configEventMatch.ini')
+    configfile = os.path.join(homedir,'eventmatch_config.ini')
     if not os.path.isfile(configfile):
         print("File \"%s\" does not exist.  Exiting", configfile)
         sys.exit(1)
@@ -306,7 +310,7 @@ if __name__ == '__main__':
     config.read_file(open(configfile))
 
     if not config.has_section('SETUP'):
-        print("Config file \"%s\" is missing section \"SETUP\".  Exiting", configfile)
+        print("Config file '%s' is missing section 'SETUP'.  Exiting", configfile)
         sys.exit(1)
 
     reqoptions = ['ignoreregions','logging_level','logfile']
@@ -316,16 +320,21 @@ if __name__ == '__main__':
         if not config.has_option('SETUP',option):
             missing.append(option)
     if len(missing):
-        print("Config file \"%s\" is missing SETUP options \"%s\".  Exiting", configfile,','.join(missing))
+        print("Config file '%s' is missing SETUP options '%s'.  Exiting", configfile,','.join(missing))
         sys.exit(1)
 
+    # Create dictionary to use when passing parameters into create_logger()
+    logdict = {}
     # Instruct logging module when to back up logfile and create new, empty one
-    # Logfile will be archived once a week on Monday, and only 8 will be kept at a time.
-    bkup_inttype = 'W0' # W0 = Monday
-    bkup_interval = 1
-    bkup_count = 8
-    bkup_suffix = '%Y-%m-%d_%H:%M:%S'
+    # Logfile will be archived once a week on Sunday, and only 8 will be kept at a time.
+    logdict['bkup_inttype'] = 'W6' # W6 = Sunday
+    logdict['bkup_interval'] = 1
+    logdict['bkup_count'] = 8
+    logdict['bkup_suffix'] = '%Y-%m-%d_%H:%M:%S'
+    logdict['homedir'] = homedir
+    logdict['config'] = config
+
     # Create logfile
-    logger = create_logger(bkup_inttype, bkup_interval, bkup_count, bkup_suffix)
+    logger = create_logger(logdict)
 
     call_matcher(options)    
