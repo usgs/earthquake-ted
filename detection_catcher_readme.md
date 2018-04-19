@@ -15,7 +15,7 @@ If the environment has not been created yet or does not exist, type:
 
 Detection_catcher requires that the detection_ext Postgres table exists. If this table has not been created, first activate the PostgreSQL Test_DB from the terminal by typing:
 
-    psql -D ted -u ted -p 5433
+    psql -d <testDB_name> -U <testDB_user> -p <testDB_port>
 
 And entering the same password that is used for the TED Dev database.
 Create the detection_ext table by typing:

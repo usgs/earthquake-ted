@@ -19,21 +19,22 @@ The following tables must exist in Postgres:
 
 If these tables have not been created, first activate the PostgreSQL Test_DB from the terminal by typing:
 
-    psql -D ted -u ted -p 5433
+    psql -d <testDB_name> -U <testDB_user> -p <testDB_port>
 
 And entering the same password that is used for the TED Dev database.
 Create the keyword table by typing:
 
-    create sequence keyword_id_seq;
     create table keyword(
-        id integer not null primary key default nextval('keyword_id_seq'), 
+        id integer not null primary key, 
         title character varying(60)
     );
-    insert into keyword(title)
-    values ('earthquake','sismo','quake','temblor','terremoto','gempa',
-            'lindol','tremblement','erdbeben','deprem','σεισμός','seismós',
-            'séisme','zemljotres','potres','terremot','jordskjelv','cutremur',
-            'aardbeving','地震','भूकंप','زلزال','tremor','지진');
+    insert into keyword(id,title)
+    values (1,'earthquake'),(2,'sismo'),(3,'quake'),(4,'temblor'),
+           (5,'terremoto'),(6,'gempa'),(7,'lindol'),(8,'tremblement'),
+           (9,'erdbeben'),(10,'deprem'),(11,'σεισμός'),(12,'seismós'),
+           (13,'séisme'),(14,'zemljotres'),(15,'potres'),(16,'terremot'),
+           (17,'jordskjelv'),(18,'cutremur'),(19,'aardbeving'),(20,'地震'),
+           (21,'भूकंप'),(22,'زلزال'),(23,'tremor'),(24,'지진');
 
 Create the message table by typing:
 
