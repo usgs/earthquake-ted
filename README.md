@@ -14,10 +14,7 @@ Install Notes
 2) set up for SSL (may have to happen before step 1) - instructions at https://gitlab.cr.usgs.gov/mhearne/install-ssl
 
 3) install this project (ted trigger code)
-    ssh into TED Dev server
-    cd /home/ted/tedapp
-    sudo su ted 
-    git clone https://github.com/mhearne-usgs/ted.git
+    git clone <thisProject>
     cd ted
     ./install.sh
     
