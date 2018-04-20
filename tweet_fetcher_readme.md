@@ -9,17 +9,20 @@ Installation and Dependencies
 -----------------------------
 
 The ted conda environment must be activated for whichever user is running PDL. The PDL runs this code when a new event or event update (origin product) is received. To activate this environment for that user, type:
+
     source activate ted
+
 If the environment has not been created yet or does not exist, type:
+
     ./install.sh 
 
 The following tables must exist in Postgres:
 - keyword
 - message
 
-If these tables have not been created, first activate the PostgreSQL Test_DB from the terminal by typing:
+If these tables have not been created, first activate the desired PostgreSQL database from the terminal by typing:
 
-    psql -d <testDB_name> -U <testDB_user> -p <testDB_port>
+    psql -d <DB_name> -U <DB_user> -p <DB_port>
 
 And entering the same password that is used for the TED Dev database.
 Create the keyword table by typing:
@@ -64,4 +67,5 @@ Running tweet_fetcher.py
 ------------------------
 
 Run tweet_fetcher as a background process by typing:
+
     python tweet_fetcher &

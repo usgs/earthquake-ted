@@ -9,8 +9,11 @@ Installation and Dependencies
 -----------------------------
 
 The ted conda environment must be activated for whichever user is running PDL. The PDL runs this code when a new event or event update (origin product) is received. To activate this environment for that user, type:
+
     source activate ted
+
 If the environment has not been created yet or does not exist, type:
+
     ./install.sh 
 
 Event_trigger has been designed to run in Python 3.
@@ -18,9 +21,9 @@ Event_trigger has been designed to run in Python 3.
 Running event_trigger
 ---------------------
 
-To run event_trigger, first copy over event_trigger from ./bin/ into /home/ted/tedapp/. Make sure that trigger_funcs.py has been copied from ./ted/ into /home/ted/tedapp/.
+To run event_trigger, first copy over event_trigger from ./bin into ~/tedapp. Make sure that trigger_funcs.py has been copied from ./ted into ~/tedapp.
 
-The config file for event_trigger must be installed in the same directory and named event_config.ini. An example event_config.ini can be found in this Git repository under .\bin\exampleConfigFiles\. The following pieces of information must be updated in the example event_config.ini to use it with event_trigger:
+The config file for event_trigger must be installed in the ~/tedapp and named event_config.ini. An example event_config.ini can be found in this Git repository under ./exampleConfigFiles. The following pieces of information must be updated in the example event_config.ini to use it with event_trigger:
 
     devtweetserver          update with the URL of the TED Dev server
     prodtweetserver         update with the URL of the TED Production server
@@ -43,4 +46,6 @@ Event_trigger is instantiated by PDL, and should already have its own indexer_li
 And the line which begins with "listeners = " should already include the listener defined previously in brackets, like this:
  
     listeners = indexer_listener_exec
+
+After editing config.ini, restart PDL.
 
