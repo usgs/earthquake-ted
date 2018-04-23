@@ -116,8 +116,9 @@ if __name__ == '__main__':
 
     # Create Kafka consumer and pass the TED topic to the server
     consumer_name = config.get('KAFKA', 'consumer_name')
-    group_id = 'TED.consumer'
-    bootstrap_server = 'igskcicgvmkafka.cr.usgs.gov:9092'
+    group_id = config.get('KAFKA', 'group_id')
+    bootstrap_server = config.get('KAFKA', 'bootstrap_server')
+
     consumer = KafkaConsumer(consumer_name,
                              group_id=group_id,
                              bootstrap_servers=[bootstrap_server])
