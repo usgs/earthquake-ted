@@ -63,8 +63,22 @@ Create the message table by typing:
 
 Tweet_fetcher has been designed to run in Python 3.
 
-Running tweet_fetcher.py
-------------------------
+Running tweet_fetcher
+---------------------
+
+To run tweet_fetcher, first copy over tweet_fetcher from ./bin into ~/tedapp. Make sure that trigger_funcs.py has been copied from ./ted into ~/tedapp.
+
+The config file for tweet_fetcher must exist in ~/tedapp and be named fetcher_config.ini. An example fetcher_config.ini can be found in this Git repository under ./exampleConfigFiles. The following pieces of information must be updated in the example fetcher_config.ini to use it with tweet_fetcher:
+
+    db_ip                        IP address of the Postgres database
+    db_port                      port number of the Postgres database
+    db_name                      name of the Postgres database
+    db_user                      username for the Postgres database
+    db_password                  password for the Postgres database
+    twitter_apikey               Twitter API account key
+    twitter_apisecret            Twitter API account secret key
+    twitter_accesstoken          Twitter API account token
+    twitter_accesstoken_secret   Twitter API account secret token
 
 Run tweet_fetcher as a background process by typing:
 

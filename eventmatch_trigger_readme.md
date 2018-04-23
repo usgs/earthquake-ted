@@ -61,11 +61,11 @@ To run eventmatch_trigger, first copy over eventmatch_trigger from ./bin into ~/
 
 The config file for eventmatch_trigger must be installed in ~/tedapp and named eventmatch_config.ini. An example eventmatch_config.ini can be found in this Git repository under ./exampleConfigFiles. The following pieces of information must be updated in the example eventmatch_config.ini to use it with eventmatch_trigger:
 
-    testDB_ip          IP address of the Test database, same as the TEDDev database
-    testDB_port        port number of the Test database
-    testDB_name        name of the Test databse, same as the TEDDev database
-    testDB_user        username for the Test database, same as the TEDDev database
-    testDB_password    password for the Test database, same as the TEDDev database
+    db_ip          IP address of the Postgres database
+    db_port        port number of the Postgres database
+    db_name        name of the Postgres database
+    db_user        username for the Postgres database
+    db_password    password for the Postgres database
 
 Eventmatch_trigger is instantiated by PDL, and needs its own indexer_listener and listener in the Product Client config file to run. 
 

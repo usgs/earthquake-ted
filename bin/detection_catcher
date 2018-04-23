@@ -1,0 +1,135 @@
+#!/usr/bin/env python
+
+from kafka import KafkaConsumer
+from kafka.errors import KafkaError
+import os.path
+import sys
+import configparser
+import json
+import psycopg2
+from datetime import datetime
+# from myTedSetup import setUpLog, connectToOneDB, connectToTwoDBs, closeOneDB, closeTwoDBs
+# Local imports
+from trigger_funcs import create_logger
+
+"""
+detection_catcher.py - Takes incoming Kafka messages from TED, parses them for detection 
+information, and puts this information in the detection_ext table. Also checks if the
+detection has any triggering tweets, and records the timestamp of the earliest one in
+detection_ext. 
+"""
+
+def fill_detection_ext(detection):
+    # Parse Kafka message for detection info
+    try:
+        parsed_detection = json.loads(detection)
+        detectionID = int(parsed_detection["ID"][5:])
+        detectionLat = parsed_detection["Hypocenter"]["Latitude"]
+        detectionLon = parsed_detection["Hypocenter"]["Longitude"]
+        detectionTime = parsed_detection["Hypocenter"]["Time"]
+
+        # Record detection info in detection_ext table
+        query = "insert into detection_ext (detection_id, detection_time, " + \
+                f"detection_lat, detection_lon) values ({detectionID}, " + \
+                f"timestamp '{detectionTime}', {detectionLat}, {detectionLon});"
+        cur.execute(query)
+        conn.commit()
+        f.write(f"{tnow}: Inserted detection id no. {detectionID} into detection_ext table.\n")
+
+        # Record detection ID in event_match table
+        utcnow = datetime.utcnow() # Get current UTC time
+        query = "insert into event_match (detection_id, create_time) values " + \
+                f"({detectionID}, {utcnow});'"
+        curWrite.execute(query)
+        conn.commit()
+        logger.info("Inserted detection %i into event_match table", detectionID)
+
+        # Call method that checks for first trigger time
+        find_first_trigger_time(detectionID)
+
+    except Exception as e:
+        logger.error("Unexpected error occured while updating detection_ext table", 
+                     exc_info=True)
+
+def find_first_trigger_time(detID):
+    try:
+        # Check for triggering tweets
+        #query = f"select id from detection_status where detection_id = 3143 " + \
+        #        "and is_trigger = true;"
+        query = f"select id from detection_status where detection_id = {detID} " + \
+                "and is_trigger = true;"
+        cur.execute(query)
+        triggeringTweets = curQuery.fetchall()
+        logger.info("Returned triggering tweets - %s", str(triggeringTweets))
+
+        triggerTime = None
+        if (len(triggeringTweets) > 0):
+            # Get earliest triggering tweet
+            query = "select min(s.twitter_date) from status s where s.id in " + \
+                    "(select ds.status_id from detection d, detection_status ds, " + \
+                    f"status s where d.id = {detID} and ds.detection_id = d.id and " + \
+                    "ds.is_trigger = true and ds.status_id = s.id);"
+            cur.execute(query)
+            triggerTime = cur.fetchone()[0]
+            # Insert values into detection_ext table
+            query = f"update detection_ext set first_trigger_time = '{triggerTime}' " + \
+                    f"where detection_id = {detID};"
+            # query = "insert into detection_ext (first_trigger_time)" + \
+            #        f" values (timestamp '{triggerTime}');"
+            cur.execute(query)
+            conn.commit()
+    except Exception as e:
+        logger.error("Unexpected error while looking for first trigger time", exc_info=True)
+
+if __name__ == '__main__':
+    # Set parameters for creating logfile
+    homedir = os.path.dirname(os.path.abspath(__file__))
+    configfile = os.path.join(homedir, 'catcher_config.ini')
+    if not os.path.isfile(configfile):
+        print("Config file '%s' does not exist. Exiting" % configfile)
+        sys.exit(1)
+    config = configparser.ConfigParser()
+    config.read_file(open(configfile))
+
+    logdict = {}
+    logdict['bkup_inttype'] = 'M' # M = monthly
+    logdict['bkup_interval'] = 1
+    logdict['bkup_count'] = 12
+    logdict['bkup_suffix'] = '%Y-%m-%d_%H:%M:%S'
+    logdict['homedir'] = homedir
+    logdict['config'] = config
+
+    # Create logfile
+    logger = create_logger(logdict)
+
+    # Set up database connection
+    dbname = config.get('DATABASE', 'db_name')
+    dbuser = config.get('DATABASE', 'db_user')
+    dbpassword = config.get('DATABASE', 'db_password')
+    dbport = config.get('DATABASE', 'db_port')
+
+    conn = psycopg2.connect(dbname=dbname,
+                            user=dbuser,
+                            port=dbport,
+                            password=dbpassword)
+    cur = conn.cursor()
+
+    # Create Kafka consumer and pass the TED topic to the server
+    consumer_name = config.get('KAFKA', 'consumer_name')
+    group_id = 'TED.consumer'
+    bootstrap_server = 'igskcicgvmkafka.cr.usgs.gov:9092'
+    consumer = KafkaConsumer(consumer_name,
+                             group_id=group_id,
+                             bootstrap_servers=[bootstrap_server])
+    
+    # Continuously listen to the connection and print messages
+    for msg in consumer:
+         logger.info(msg.value)
+
+    # Commit detection to database
+    detection = msg.value.decode("utf-8")
+    fill_detection_ext(detection)
+
+    # Close database connection
+    conn.close()
+    cur.close()

@@ -46,11 +46,11 @@ The config file for tweet_trigger must be installed in ~/tedapp and named tweet_
 
     gousa_username               Username associated with go.usa account for shortening links
     gousa_apikey                 Api key associated with go.usa account for shortening links
-    testDB_ip                    IP address of the Test database, same as the TEDDev database
-    testDB_port                  port number of the Test database
-    testDB_name                  name of the Test databse, same as the TEDDev database
-    testDB_user                  username for the Test database, same as the TEDDev database
-    testDB_password              password for the Test database, same as the TEDDev database
+    db_ip          IP address of the Postgres database
+    db_port        port number of the Postgres database
+    db_name        name of the Postgres database
+    db_user        username for the Postgres database
+    db_password    password for the Postgres database
     twitter_apikey               Twitter API account key
     twitter_apisecret            Twitter API account secret key
     twitter_accesstoken          Twitter API account token

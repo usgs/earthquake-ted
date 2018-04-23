@@ -34,6 +34,22 @@ Create the detection_ext table by typing:
 
 Detection_catcher has been designed to run in Python 3.
 
-Running detection_catcher.py
-------------------------
+Running detection_catcher
+-------------------------
 
+To run detection_catcher, first copy over detection_catcher from ./bin into ~/tedapp. Make sure that trigger_funcs.py has been copied from ./ted into ~/tedapp.
+
+The config file for detection_catcher must exist in ~/tedapp and be named catcher_config.ini. An example catcher_config.ini can be found in this Git repository under ./exampleConfigFiles. The following pieces of information must be updated in the example catcher_config.ini to use it with detection_catcher:
+
+    consumer_name       Kafka consumer name
+    group_id            group_id for Kafka consumer
+    bootstrap_server    bootstrap_server for Kafka consumer
+    db_ip               IP address of the Postgres database
+    db_port             port number of the Postgres database
+    db_name             name of the Postgres database
+    db_user             username for the Postgres database
+    db_password         password for the Postgres database
+
+Run detection_catcher as a background process by typing:
+
+    python detection_catcher &
