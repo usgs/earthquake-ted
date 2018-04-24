@@ -251,14 +251,16 @@ def tweet_event(eventdict):
         # Calculate time it took to tweet event
         t2 =  datetime.now()
         td=t2-t1
+  
+        # Add tweeted event to tweet_audit table
+        add_tweet_to_db(eventdict)
+
+        return(True,tweetstring,td)
+
     except Exception as e:
         error_string = "Tweet for event %s failed with error:" % eid
         logger.error(error_string, exc_info=True)
         return(False,e,0)
-
-    add_tweet_to_db(eventdict)
-
-    return(True,tweetstring,td)
 
 def close_all():
     """
