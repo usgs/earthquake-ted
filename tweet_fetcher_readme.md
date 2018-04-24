@@ -32,12 +32,34 @@ Create the keyword table by typing:
         title character varying(60)
     );
     insert into keyword(id,title)
-    values (1,'earthquake'),(2,'sismo'),(3,'quake'),(4,'temblor'),
-           (5,'terremoto'),(6,'gempa'),(7,'lindol'),(8,'tremblement'),
-           (9,'erdbeben'),(10,'deprem'),(11,'σεισμός'),(12,'seismós'),
-           (13,'séisme'),(14,'zemljotres'),(15,'potres'),(16,'terremot'),
-           (17,'jordskjelv'),(18,'cutremur'),(19,'aardbeving'),(20,'地震'),
-           (21,'भूकंप'),(22,'زلزال'),(23,'tremor'),(24,'지진');
+    values (1,'earthquake'),
+           (2,'sismo'),
+           (3,'quake'),
+           (4,'temblor'),
+           (5,'terremoto'),
+           (6,'gempa'),
+           (7,'lindol'),
+           (8,'tremblement'),
+           (9,'erdbeben'),
+           (10,'deprem'),
+           (11,'σεισμός'),
+           (12,'seismós'),
+           (13,'séisme'),
+           (14,'zemljotres'),
+           (15,'potres'),
+           (16,'terremot'),
+           (17,'jordskjelv'),
+           (18,'cutremur'),
+           (19,'aardbeving'),
+           (20,'地震'),
+           (21,'भूकंप'),
+           (22,'زلزال'),
+           (23,'tremor'),
+           (24,'지진'),
+           (25,'زمینلرز'),
+           (26,'زلزله'),
+           (27,'tsunami'),
+           (28,'zelzele');
 
 Create the message table by typing:
 
