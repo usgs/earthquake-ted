@@ -156,7 +156,6 @@ def call_matcher(options):
         info_string = """Unacceptable action '%s'. Ignoring all actions but 'EVENT_ADDED' and
                          'EVENT_UPDATED'. Exiting""" % options['action']
         logger.info(info_string)
-        # logger.info("Ignoring all actions but 'EVENT_ADDED' and 'EVENT_UPDATED'. Exiting")
         sys.exit(0)
 
     # If network source is in ignoreregions list, exit application
@@ -166,7 +165,7 @@ def call_matcher(options):
         sys.exit(0)
 
     # If event code is not same as preferred event ID, exit application
-    if options['code'] != options['preferredID']:
+    if options['code'].lower() != options['preferredID'].lower():
         logger.info("Ignoring non-preferred ID '%s'. Exiting", options['code'])
         sys.exit(0)
 

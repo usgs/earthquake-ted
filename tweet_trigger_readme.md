@@ -32,6 +32,7 @@ Create the tweet_audit table by typing:
         event_time timestamp without time zone,
         magnitude real,
         tweet_time timestamp without time zone not null
+        tweet_text chracter varying(290) not null
     );
 
 
