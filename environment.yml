@@ -27,6 +27,7 @@ dependencies:
 - jupyter_client=5.2.2
 - jupyter_console=5.2.0
 - jupyter_core=4.4.0
+- kafka-python=1.4.2
 - libgfortran=3.0.0
 - libpng=1.6.34
 - libsodium=1.0.15
@@ -86,6 +87,7 @@ dependencies:
   - jupyter-client==5.2.2
   - jupyter-console==5.2.0
   - jupyter-core==4.4.0
+  - kafka_python==1.4.2
   - prompt-toolkit==1.0.15
   - psycopg2==2.7.3.1
   - tweepy==3.5.0

@@ -52,6 +52,16 @@ def stream_tweets():
     keywords = []
     for word in quake_words:
         keywords.append(word[0])
+   
+    # Add hashtags of keywords to keywords list
+    # Add keywords in quotes to keywords list
+    new_keywords = []
+    for i in range(0,len(keywords)):
+        new_keywords.append("#" + keywords[i])
+        new_keywords.append("'" + keywords[i] + "'")
+        new_keywords.append('"' + keywords[i] + '"')
+
+    keywords = keywords + new_keywords
 
     # Filter Twitter Streams to capture data by certain keywords
     stream.filter(track=keywords)

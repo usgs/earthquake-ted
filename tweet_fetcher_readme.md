@@ -9,17 +9,20 @@ Installation and Dependencies
 -----------------------------
 
 The ted conda environment must be activated for whichever user is running PDL. The PDL runs this code when a new event or event update (origin product) is received. To activate this environment for that user, type:
+
     source activate ted
+
 If the environment has not been created yet or does not exist, type:
+
     ./install.sh 
 
 The following tables must exist in Postgres:
 - keyword
 - message
 
-If these tables have not been created, first activate the PostgreSQL Test_DB from the terminal by typing:
+If these tables have not been created, first activate the desired PostgreSQL database from the terminal by typing:
 
-    psql -d <testDB_name> -U <testDB_user> -p <testDB_port>
+    psql -d <DB_name> -U <DB_user> -p <DB_port>
 
 And entering the same password that is used for the TED Dev database.
 Create the keyword table by typing:
@@ -29,12 +32,34 @@ Create the keyword table by typing:
         title character varying(60)
     );
     insert into keyword(id,title)
-    values (1,'earthquake'),(2,'sismo'),(3,'quake'),(4,'temblor'),
-           (5,'terremoto'),(6,'gempa'),(7,'lindol'),(8,'tremblement'),
-           (9,'erdbeben'),(10,'deprem'),(11,'σεισμός'),(12,'seismós'),
-           (13,'séisme'),(14,'zemljotres'),(15,'potres'),(16,'terremot'),
-           (17,'jordskjelv'),(18,'cutremur'),(19,'aardbeving'),(20,'地震'),
-           (21,'भूकंप'),(22,'زلزال'),(23,'tremor'),(24,'지진');
+    values (1,'earthquake'),
+           (2,'sismo'),
+           (3,'quake'),
+           (4,'temblor'),
+           (5,'terremoto'),
+           (6,'gempa'),
+           (7,'lindol'),
+           (8,'tremblement'),
+           (9,'erdbeben'),
+           (10,'deprem'),
+           (11,'σεισμός'),
+           (12,'seismós'),
+           (13,'séisme'),
+           (14,'zemljotres'),
+           (15,'potres'),
+           (16,'terremot'),
+           (17,'jordskjelv'),
+           (18,'cutremur'),
+           (19,'aardbeving'),
+           (20,'地震'),
+           (21,'भूकंप'),
+           (22,'زلزال'),
+           (23,'tremor'),
+           (24,'지진'),
+           (25,'زمینلرز'),
+           (26,'زلزله'),
+           (27,'tsunami'),
+           (28,'zelzele');
 
 Create the message table by typing:
 
@@ -60,8 +85,23 @@ Create the message table by typing:
 
 Tweet_fetcher has been designed to run in Python 3.
 
-Running tweet_fetcher.py
-------------------------
+Running tweet_fetcher
+---------------------
+
+To run tweet_fetcher, first copy over tweet_fetcher from ./bin into ~/tedapp. Make sure that trigger_funcs.py has been copied from ./ted into ~/tedapp.
+
+The config file for tweet_fetcher must exist in ~/tedapp and be named fetcher_config.ini. An example fetcher_config.ini can be found in this Git repository under ./exampleConfigFiles. The following pieces of information must be updated in the example fetcher_config.ini to use it with tweet_fetcher:
+
+    db_ip                        IP address of the Postgres database
+    db_port                      port number of the Postgres database
+    db_name                      name of the Postgres database
+    db_user                      username for the Postgres database
+    db_password                  password for the Postgres database
+    twitter_apikey               Twitter API account key
+    twitter_apisecret            Twitter API account secret key
+    twitter_accesstoken          Twitter API account token
+    twitter_accesstoken_secret   Twitter API account secret token
 
 Run tweet_fetcher as a background process by typing:
+
     python tweet_fetcher &

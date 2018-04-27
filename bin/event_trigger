@@ -104,19 +104,20 @@ def call_poster(options):
              - preferredID: Preferred event ID
              - type: Event type (should be 'origin')
     """
-
+    # If event is not an event add or event update trigger, exit application
     if options['action'] not in ['EVENT_ADDED', 'EVENT_UPDATED']:
         info_string = """Unacceptable action '%s'. Ignoring all actions but 'EVENT_ADDED' and
                          'EVENT_UPDATED'. Exiting""" % options['action']
         logger.info(info_string)
-        # logger.info("Ignoring all actions but 'EVENT_ADDED' and 'EVENT_UPDATED'. Exiting")
         sys.exit(0)
 
+    # If network source is in ignoreregions list, exit application
     if options['source'].lower() in ignoreregions:
         logger.info("Ignoring region '%s'.  Exiting", options['source'].lower())
         sys.exit(0)
 
-    if options['code'] != options['preferredID']:
+    # If event code is not same as preferred event ID, exit application
+    if options['code'].lower() != options['preferredID'].lower():
         logger.info("Ignoring non-preferred ID '%s'.  Exiting", options['code'])
         sys.exit(0)
 

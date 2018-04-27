@@ -162,7 +162,7 @@ def get_short_url(eventdict):
 
     return shorturl
 
-def add_tweet_to_db(eventdict):
+def add_tweet_to_db(eventdict, tweetstring):
     """
     Adds tweeted event to tweet_audit table in database. 
     eventdict: Event dictionary with the following fields, all containing STRINGS:
@@ -176,6 +176,7 @@ def add_tweet_to_db(eventdict):
                - mag: Event magnitude
                - loc: Event location (FE Region)
                - uri: Event location on USGS NEIC web site.
+    tweetstring: String that was tweeted out for event.
     """
     eid = eventdict['id']
     etime = eventdict['time']
@@ -187,8 +188,8 @@ def add_tweet_to_db(eventdict):
 
     try:
         cur.execute("insert into tweet_audit (event_id, event_lat, event_lon, event_time, " + \
-                    "magnitude, tweet_time) values (%s, %s, %s, %s, %s, %s);", (eid, lat, lon,
-                    eventtime, mag, utcnow))
+                    "magnitude, tweet_time, tweet_string) values (%s, %s, %s, %s, %s, %s, %s);", 
+                    (eid, lat, lon, eventtime, mag, utcnow, tweetstring))
         logger.info("Successfully inserted tweet info for event %s into tweet_audit table.", eid)
     except Exception as e:
         logger.error("Failed to insert event dictionary into tweet_audit table", exc_info=True)
@@ -251,14 +252,16 @@ def tweet_event(eventdict):
         # Calculate time it took to tweet event
         t2 =  datetime.now()
         td=t2-t1
+  
+        # Add tweeted event to tweet_audit table
+        add_tweet_to_db(eventdict, tweetstring)
+
+        return(True,tweetstring,td)
+
     except Exception as e:
         error_string = "Tweet for event %s failed with error:" % eid
         logger.error(error_string, exc_info=True)
         return(False,e,0)
-
-    add_tweet_to_db(eventdict)
-
-    return(True,tweetstring,td)
 
 def close_all():
     """
@@ -294,7 +297,6 @@ def call_tweeter(options):
         info_string = """Unacceptable action '%s'. Ignoring all actions but 'EVENT_ADDED' and
                          'EVENT_UPDATED'. Exiting""" % options['action']
         logger.info(info_string)
-        # logger.info("Ignoring all actions but 'EVENT_ADDED' and 'EVENT_UPDATED'. Exiting")
         close_all()
         sys.exit(0)
 
@@ -306,7 +308,7 @@ def call_tweeter(options):
         sys.exit(0)
 
     # If event code is not same as preferred event ID, exit application
-    if options['code'] != options['preferredID']:
+    if options['code'].lower() != options['preferredID'].lower():
         logger.info("Ignoring non-preferred ID '%s'.  Exiting", options['code'])
         close_all()
         sys.exit(0)

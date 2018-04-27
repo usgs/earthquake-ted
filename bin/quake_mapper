@@ -1,0 +1,276 @@
+#!/usr/bin/env python
+
+import cartopy.crs as ccrs
+import matplotlib
+import matplotlib.pyplot as plt
+from cartopy.feature import NaturalEarthFeature, LAND, COASTLINE, LAKES
+import urllib.request as urllib
+import json
+import numpy as np
+import string
+from collections import Counter
+import os
+import sys
+
+"""
+quake_mapper - Creates maps for TED detections and earthquake events.
+"""
+
+# GLOBAL MAP WITH DETECTION LOCATION
+def map_detection(basemap, detectlat, detectlon):
+    #Set path to backgrounds folder
+    os.environ["CARTOPY_USER_BACKGROUNDS"] = "./BackgroundImages/"
+    
+    # Set map size and title
+    plt.figure(figsize=(13,6.2))
+
+    # Select the projection you want, plot the resolution you wish to use
+    if basemap == "terrain":
+        ax1 = plt.axes(projection=ccrs.PlateCarree())
+        ax1.coastlines()
+        ax1.stock_img() 
+    elif basemap == "satellite":
+        ax1 = plt.subplot(111,projection=ccrs.PlateCarree())
+        ax1.background_img(name='BM', resolution='high')
+        ax1.coastlines(resolution='110m')
+    else:
+        print("Invalid basemap input.")
+
+    # Plot detection as a point marker on the map
+    plt.plot(detectlon, detectlat, color='blue',
+    marker='o',markersize=10,transform=ccrs.PlateCarree())
+    
+    # Display the plot in a window
+    plt.title("TED Detection Location")
+    plt.show()
+    plt.savefig('./Maps/Global/detection' + str(detectionID) + '_global.png') #save figure
+
+# Get coordinates for all tweets which triggered TED detection
+def get_tweet_coordinates(detectionID):
+    try:
+         conn = psycopg2.connect("host='136.177.50.40' port=5432 dbname='ted' " + \
+                                 "user='ted' password='1qaz2wsx'")
+        # Get cursor object to perform queries
+        cur = conn.cursor()
+    except psycopg2.InterfaceError as e:
+        print("I am unable to connect to the database.",e)
+    
+    tweetLons = []
+    tweetLats = []
+    countCoords = {}
+    
+    # Query database
+    query = ("select reverse_geo_code from detection_status where " + \
+             "detection_id = %s and reverse_geo_code is not null;"                  
+             % detectionID) # Check that tweet is also trigger?
+    cur.execute(query)
+    tweetLocations = [row[0] for row in cur.fetchall()]
+    
+    if not tweetLocations:
+        print("No tweet coordinates available for this detection.")
+        conn.close()
+        cur.close()
+
+        return(tweetLons, tweetLats, countCoords)
+    
+    # TO-DO: Check if tweetLocations list is empty
+    
+    # Get rid of any coordinates with letters
+    tweetCoordinates = [x for x in tweetLocations if all(j.isdigit() or j \
+                        in string.punctuation or j.isspace() for j in x)]
+
+    # Split  tweet coordinates up into lat and lon lists
+    splitTweetCoords = []
+
+    for x in range(0, len(tweetCoordinates)):
+        row = [x.strip() for x in tweetCoordinates[x].split(', ')]
+        splitTweetCoords.append(row)
+
+    tweetLats = [item[0] for item in splitTweetCoords]
+    tweetLons = [item[1] for item in splitTweetCoords]
+
+    # Convert tweet coordinate lists from strings to doubles
+    tweetLons = [float(x) for x in tweetLons]
+    tweetLats = [float(x) for x in tweetLats]
+    
+    # Convert tweet coordinates from string to float
+    for index, item in enumerate(tweetLats):
+        tweetLats[index] = float(item)
+    for index, item in enumerate(tweetLons):
+        tweetLons[index] = float(item)
+
+    mapCoords=zip(tweetLons,tweetLats)
+
+    # Find duplicate tweet coordinates
+    countCoords = dict(Counter(mapCoords))
+    tweetLons, tweetLats = zip(*countCoords.keys())
+    
+    # Map tweets
+    map_tweets(tweetLats, tweetLons, countCoords)
+
+    conn.close()
+    cur.close()
+
+    return(tweetLons, tweetLats, countCoords)
+
+# Define a map window
+def get_tweet_map_boundaries(, tweetLats, tweetLons):
+    tolerance = 5
+    
+    minLon = min(tweetLons) - tolerance
+    maxLon = max(tweetLons) + tolerance
+    minLat = min(tweetLats) - tolerance
+    maxLat = max(tweetLats) + tolerance
+ 
+    return(minLon, maxLon, minLat, maxLat)
+
+# Get cities in surrounding region based on a minimum population
+def get_cities(minPopulation, minLon, maxLon, minLat, maxLat):
+    jsonURL = ("https://earthquake.usgs.gov/ws/geoserve/places.json?" + \
+              "minlatitude=" + format(minLat,'.3f') + "&maxlatitude=" + \
+              format(maxLat,'.3f') + "&minlongitude=" + format(minLon,'.3f') + \
+              "&maxlongitude=" + format(maxLon,'.3f') + "&minpopulation=" + \
+              minPopulation + "&type=geonames")
+
+    response = urllib.urlopen(jsonURL)
+    geoserveData = json.load(response)
+
+    cityNames = []
+    cityLats = []
+    cityLons = []
+
+    cityCount = geoserveData["geonames"]["features"]
+    for i in range(0,len(cityCount)):
+        cityNames.append(cityCount[i]["properties"]["name"])
+        cityLons.append(cityCount[i]["geometry"]["coordinates"][0])
+        cityLats.append(cityCount[i]["geometry"]["coordinates"][1])
+        # cityPops.append(cityCount[i]["properties"]["population"])
+
+    return(cityNames,cityLons,cityLats)
+
+def plot_cities(minLon, maxLon, minLat, maxLat, cityNames, cityLats, cityLons):
+    mapGap = 0.1 # prevents city from appearing outside map boundaries
+    for i in range(0,len(cityNames)):
+       if (minLon + mapGap) <= cityLons[i] <= (maxLon - mapGap) and \
+          (minLat + mapGap) <= cityLats[i] <= (maxLat - mapGap):
+            plt.plot(cityLons[i], cityLats[i], color='black', linewidth=0, marker='o',
+                     markersize=5,transform=ccrs.PlateCarree())
+             
+    # Label cities
+    for i in range(0,len(cityNames),2):
+        if (minLon + mapGap) <= cityLons[i] <= (maxLon - mapGap) and (minLat + mapGap) \
+           <= cityLats[i] <= (maxLat - mapGap):
+            plt.text(cityLons[i], cityLats[i], cityNames[i], fontsize=12,
+                     va='top', ha='center')
+    
+    for i in range(1,len(cityNames),2):
+        if (minLon + mapGap) <= cityLons[i] <= (maxLon - mapGap) and (minLat + mapGap) \
+           <= cityLats[i] <= (maxLat - mapGap):
+            plt.text(cityLons[i], cityLats[i], cityNames[i], fontsize=12,
+                     va='bottom', ha='center')   
+
+# TWEET MAP
+def map_tweets(tweetLats, tweetLons, countCoords):
+    minLon, maxLon, minLat, maxLat = get_tweet_map_boundaries(tweetLats, tweetLons)
+    
+    # Define a background image
+    ax2 = plt.axes(projection=ccrs.PlateCarree())
+    # ax.coastlines(resolution='10m') # will use depending on background image
+    ax2.set_extent([minLon, maxLon, minLat, maxLat])
+    ax2.stock_img()
+    ax2.add_feature(LAND)
+    ax2.add_feature(COASTLINE)
+    ax2.add_feature(LAKES)
+    
+    # Add states/provinces
+    STATES = NaturalEarthFeature(category='cultural',scale='10m',
+                                 facecolor='none',
+                                 name='admin_1_states_provinces_lines')
+    ax2.add_feature(STATES,edgecolor='gray')
+    
+    minPopulation_tweetMap = "100000"
+    cityNames, cityLats, cityLons = get_cities(minPopulation_tweetMap, minLon, 
+                                               maxLon, minLat, maxLat)
+    while (len(cityNames) > 6):
+        minPopulation = str(int(minPopulation) + 20000)
+        cityNames, cityLats, cityLons = get_cities(minPopulation, minLon, 
+                                                   maxLon, minLat, maxLat)
+    plot_cities(minLon, maxLon, minLat, maxLat, cityNames, cityLats, cityLons)
+
+    # Plot the variables as a point marker on the map
+    plt.plot(tweetLons, tweetLats, color='blue', linewidth=0,
+    marker='o',markersize=12,transform=ccrs.PlateCarree())
+
+    # Label points with number of tweets
+    dupCount = countCoords.values()
+    for key in countCoords:
+        plt.text(key[0], key[1], countCoords[key], fontsize=12, 
+                 fontweight='bold', color='w', va='center', ha='center')
+
+    # Display the plot in a window
+    plt.title("Triggering Tweets Map")
+    plt.show()
+    plt.savefig('./Maps/TweetLocations/detection' + str(detectionID) + \
+                '_tweets.png') #Save figure
+
+# Detection Event Location Map
+def map_event_vs_detection(mapdict):
+    # Get inputs
+    detectionID = mapdict['detectid']
+    detectlat = mapdict['detectlat']
+    detectlon = mapdict['detectlon']
+    eventID = mapdict['eventid']
+    eventlat = mapdict['eventlat']
+    eventlon = mapdict['eventlon']
+    tweetLats, tweetLons, countCoords = get_tweet_coordinates(detectionID)
+    
+    # Define a background image
+    ax3 = plt.axes(projection=ccrs.PlateCarree())
+    ax3.set_extent([minLon, maxLon, minLat, maxLat])
+    ax3.stock_img()
+    ax3.add_feature(LAND)
+    ax3.add_feature(COASTLINE)
+    ax3.add_feature(LAKES)
+
+    # Add states/provinces
+    STATES = NaturalEarthFeature(category='cultural',scale='10m',
+                                 facecolor='none',
+                                 name='admin_1_states_provinces_lines')
+    ax3.add_feature(STATES,edgecolor='gray')
+    
+    # Map nearby cities
+    minPopulation = "100000"
+ 
+    # Define map boundaries
+    tolerance = 5
+    minLon = min(detectlon, eventlon) - tolerance
+    maxLon = max(detectlon, eventlon) + tolerance
+    minLat = min(detectlat, eventlat) - tolerance
+    maxLat = max(detectlat, eventlat) + tolerance
+    
+    # Will not re-generate cities if tweet map exists
+    if (len(tweetLons) == 0 or len(tweetLats) == 0):
+        cityNames, cityLats, cityLons = get_cities(minPopulation, minLon, maxLon, 
+                                                   minLat, maxLat)
+        while (len(cityNames) > 6):
+            minPopulation = str(int(minPopulation) + 20000)
+            cityNames, cityLats, cityLons = get_cities(minPopulation, minLon, 
+                                                       maxLon, minLat, maxLat)
+    plot_cities(minLon, maxLon, minLat, maxLat, cityNames, cityLats, cityLons)
+    
+    # Plot detection and event as point markers
+    detectDot = plt.plot(detectlon, detectlat, 
+                         color='blue', linewidth=0, marker='o',
+                         markersize=12, label="Detection",
+                         transform=ccrs.PlateCarree())
+    eventDot = plt.plot(eventlon, eventlat, 
+                         color='red', linewidth=0, marker='o',
+                         markersize=12, label="Event",
+                         transform=ccrs.PlateCarree())
+    plt.legend()
+
+    # Display the plot in a window
+    plt.title("Detection and Event Locations Map")
+    plt.show()
+    plt.savefig('./Maps/EventDetectionLocations/detection' + str(detectionID) + \
+                '_event' + eventID + '.png') #Save figure

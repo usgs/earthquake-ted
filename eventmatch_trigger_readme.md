@@ -9,8 +9,11 @@ Installation and Dependencies
 -----------------------------
 
 The ted conda environment must be activated for whichever user is running PDL. The PDL runs this code when a new event or event update (origin product) is received. To activate this environment for that user, type:
+
     source activate ted
+
 If the environment has not been created yet or does not exist, type:
+
     ./install.sh 
 
 Two tables must exist in Postgres for events to be matched to detections:
@@ -18,11 +21,11 @@ Two tables must exist in Postgres for events to be matched to detections:
 - detection_ext
 - event_match
 
-If these tables have not been created, first activate the PostgreSQL Test_DB from the terminal by typing:
+If these tables have not been created, first activate the desired PostgreSQL database from the terminal by typing:
 
-    psql -d <testDB_name> -U <testDB_user> -p <testDB_port>
+    psql -d <DB_name> -U <DB_user> -p <DB_port>
 
-The values in brackets correspond to the values with the same name in eventmatch_config.ini. The user will also be asked to enter a password; this is the same password that is used for the TED Dev database.
+The values in brackets correspond to the values with the same name in eventmatch_config.ini. The user will also be asked to enter a password.
 
 Create the event_ext table by typing:
 
@@ -38,7 +41,9 @@ Create the event_ext table by typing:
 
 Create the event_match table by typing:
 
+    create sequence event_match_id_seq;
     create table event_match(
+        id bigint not null primary key default nextval('event_match_id_seq'),
         detection_id bigint not null,
         event_id character varying(40)
         match_time timestamp without time zone,
@@ -52,15 +57,15 @@ Eventmatch_trigger has been designed to run in Python 3.
 Running eventmatch_trigger
 --------------------------
 
-To run eventmatch_trigger, first copy over eventmatch_trigger from ./bin/ into /home/ted/tedapp/. Make sure that trigger_funcs.py has been copied from ./ted/ into /home/ted/tedapp/.
+To run eventmatch_trigger, first copy over eventmatch_trigger from ./bin into ~/tedapp. Make sure that trigger_funcs.py has been copied from ./ted into ~/tedapp.
 
-The config file for eventmatch_trigger must be installed in the same directory and named eventmatch_config.ini. An example eventmatch_config.ini can be found in this Git repository under .\bin\exampleConfigFiles\. The following pieces of information must be updated in the example eventmatch_config.ini to use it with eventmatch_trigger:
+The config file for eventmatch_trigger must be installed in ~/tedapp and named eventmatch_config.ini. An example eventmatch_config.ini can be found in this Git repository under ./exampleConfigFiles. The following pieces of information must be updated in the example eventmatch_config.ini to use it with eventmatch_trigger:
 
-    testDB_ip          IP address of the Test database, same as the TEDDev database
-    testDB_port        port number of the Test database
-    testDB_name        name of the Test databse, same as the TEDDev database
-    testDB_user        username for the Test database, same as the TEDDev database
-    testDB_password    password for the Test database, same as the TEDDev database
+    db_ip          IP address of the Postgres database
+    db_port        port number of the Postgres database
+    db_name        name of the Postgres database
+    db_user        username for the Postgres database
+    db_password    password for the Postgres database
 
 Eventmatch_trigger is instantiated by PDL, and needs its own indexer_listener and listener in the Product Client config file to run. 
 
@@ -75,7 +80,8 @@ Eventmatch_trigger is instantiated by PDL, and needs its own indexer_listener an
     processPreferredOnly = false
     autoArchive = true
 
-    And the line which begins with "listeners = " should include the new listener defined previously in brackets, like this:
+And the line which begins with "listeners = " should include the new listener defined previously in brackets, like this:
  
     listeners = indexer_listener_exec, indexer_listener_exec_match
 
+After editing config.ini, restart PDL.
