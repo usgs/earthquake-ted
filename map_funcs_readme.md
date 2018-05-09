@@ -43,6 +43,8 @@ To map the triggering tweet locations, type the following command into your term
 
     python -c 'from map_funcs import map_tweets; map_tweets(detectionID)'
 
+This function currently only works with the old TED Dev database and its detection_status table, so you will need to change the line that starts with 'port = ' in the connect_to_DB() method to 'port = 5432' if you want to create a tweet map. 
+
 To map a detection that has been matched to an event (these are listed in the event_match table), type the following command into your terminal (replace detectionID with the actual ID number and eventID with the ID string):
 
     python -c 'from map_funcs import map_event_vs_detection; map_event_vs_detection(detectionID, "eventID")'

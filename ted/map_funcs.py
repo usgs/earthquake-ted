@@ -75,8 +75,8 @@ def connect_to_db():
          config.read_file(open(configfile))
 
          prefix = 'db'
-         port = config.get('DATABASE',prefix+'_port')
-         # port = 5432
+         # port = config.get('DATABASE',prefix+'_port')
+         port = 5432
          user = config.get('DATABASE',prefix+'_user')
          dbname = config.get('DATABASE',prefix+'_name')
          password = config.get('DATABASE',prefix+'_password')
@@ -349,9 +349,10 @@ def map_detection(detectionID, basemap="terrain"):
             ax1.background_img(name='satellite_small', resolution='high')
             ax1.coastlines(resolution='110m')
         else:
-            warning_string = """No valid basemap option detected. Please enter
-                                one of these options: %s""" % valid_options
+            warning_string = "No valid basemap option detected. Please enter" + \
+                             "one of these options: %s. Exiting" % valid_options
             logger.warning(warning_string)
+            sys.exit(1)
 
         # Plot detection as a point marker on the map
         plt.plot(detectLon, detectLat, color='red',
@@ -415,9 +416,10 @@ def map_tweets(detectionID, basemap="terrain"):
             ax2.background_img(name='satellite_large', resolution='high')
             ax2.set_extent([minLon, maxLon, minLat, maxLat])
         else:
-            warning_string = """No valid basemap option detected. Please enter
-                                one of these options: %s""" % valid_options
+            warning_string = "No valid basemap option detected. Please enter" + \
+                             "one of these options: %s. Exiting" % valid_options
             logger.warning(warning_string)
+            sys.exit(1)
 
         # Find duplicate tweet coordinates and make list of number of 
         # tweets at each location
@@ -462,7 +464,7 @@ def map_tweets(detectionID, basemap="terrain"):
         ax2.legend(loc='center left', bbox_to_anchor=(1,0.5))
 
         # Display the plot in a window
-        plt.title("Triggering Tweet Locations")
+        plt.title("Triggering Tweet Locations\n(With Number of Tweets at Each Location)")
 
         # Save map
         map_dirpath = os.path.join(get_map_folderpath(detectionID))
@@ -554,9 +556,10 @@ def map_event_vs_detection(detectionID, eventID, basemap="terrain"):
             ax3.background_img(name='satellite_large', resolution='high')
             ax3.set_extent([minLon, maxLon, minLat, maxLat])
         else:
-            warning_string = """No valid basemap option detected. Please enter
-                                one of these options: %s""" % valid_options
+            warning_string = "No valid basemap option detected. Please enter" + \
+                             "one of these options: %s. Exiting" % valid_options
             logger.warning(warning_string)
+            sys.exit(1)
 
         # Plot detection and event as point markers
         eventDot = plt.plot(eventLon, eventLat,
