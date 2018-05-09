@@ -188,7 +188,7 @@ def add_tweet_to_db(eventdict, tweetstring):
 
     try:
         cur.execute("insert into tweet_audit (event_id, event_lat, event_lon, event_time, " + \
-                    "magnitude, tweet_time, tweet_string) values (%s, %s, %s, %s, %s, %s, %s);", 
+                    "magnitude, tweet_time, tweet_text) values (%s, %s, %s, %s, %s, %s, %s);", 
                     (eid, lat, lon, eventtime, mag, utcnow, tweetstring))
         logger.info("Successfully inserted tweet info for event %s into tweet_audit table.", eid)
     except Exception as e:
@@ -310,6 +310,9 @@ def call_tweeter(options):
     # If event code is not same as preferred event ID, exit application
     if options['code'].lower() != options['preferredID'].lower():
         logger.info("Ignoring non-preferred ID '%s'.  Exiting", options['code'])
+        info_string = "Event code is %s, preferred event ID is %s" % (
+                      options['code'].lower(), options['prefferedID'].lower())
+        logger.info(info_string)
         close_all()
         sys.exit(0)
 

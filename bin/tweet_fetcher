@@ -320,7 +320,7 @@ if __name__ == '__main__':
     logger = create_logger(logdict)
 
     # Connect to test database
-    prefix = 'testdb'
+    prefix = 'db'
     port = config.get('DATABASE', prefix+'_port')
     user = config.get('DATABASE', prefix+'_user')
     dbname = config.get('DATABASE', prefix+'_name')
