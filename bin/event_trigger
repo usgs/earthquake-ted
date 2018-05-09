@@ -24,16 +24,16 @@ def print_event(eventdict):
     """
     Substitute function for postEvent (to be used for offline testing).
     eventdict: Event dictionary with the following fields, all containing STRINGS:
-               - type Message type (usually 'add')
-               - id Event id
-               - source Event source ('us', 'ci', etc.)
-               - time Event time (20110415173724.011)
-               - lon Event longitude
-               - lat Event latitude
-               - depth Event depth
-               - mag Event magnitude
-               - loc Event location (FE Region?)
-               - uri Event location on USGS NEIC web site.
+               - type: Message type (usually 'add')
+               - id: Event id
+               - source: Event source ('us', 'ci', etc.)
+               - time: Event time (20110415173724.011)
+               - lon: Event longitude
+               - lat: Event latitude
+               - depth: Event depth
+               - mag: Event magnitude
+               - loc: Event location (FE Region?)
+               - uri: Event location on USGS NEIC web site.
     Returns a tuple of (boolean, errormsg).
     """
     fmt = '%s %s %s M%s (%s, %s) %s km "%s"'

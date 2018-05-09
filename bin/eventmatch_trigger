@@ -51,6 +51,7 @@ def match_event(conn, cur, eventdict):
     """
     Checks detection_ext table for detection which matches time and location of event. 
     Updates event_match table with event and detection ids once a match is found.
+
     conn: Postrgres database connection object.
     cur: Postgres database cursor object.
     eid: Unique ID string for event.
@@ -188,7 +189,7 @@ def call_matcher(options):
         logger.error("Error caught while creating event dictionary", exc_info=True)
 
     # Connect to database
-    prefix = 'testDB'
+    prefix = 'db'
     try:
         port = config.get('DATABASE',prefix+'_port')
         user = config.get('DATABASE',prefix+'_user')

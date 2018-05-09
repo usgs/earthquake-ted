@@ -1,0 +1,13 @@
+{"__comment__": "JSON file specifying the image to use for a given type/name and resolution. Read in by cartopy.mpl.geoaxes.read_user_background_images.",
+  "satellite_small": {
+    "__comment__": "Blue Marble Next Generation, July ",
+    "__source__": "https://neo.sci.gsfc.nasa.gov/view.php?datasetId=BlueMarbleNG-TB",
+    "__projection__": "PlateCarree",
+    "high": "satellite_small.jpg"},
+
+    "satellite_large": {
+    "__comment__": "VisibleEarth BlueMarble",
+    "__source__": "https://www.h-schmidt.net/map/download.html",
+    "__projection__": "PlateCarree",
+    "high": "satellite_large.jpg"}
+}

@@ -3,6 +3,8 @@
 import os.path
 import configparser
 import logging.handlers
+import urllib.request
+import json
 
 """
 trigger_funcs.py - Functions used in trigger.py, the application for generating TED messages.
@@ -16,15 +18,15 @@ def create_logger(d):
     files has been reached. 
     Returns logger object.
     d: Dictionary containing the following fields
-       - bkup_inttype One character designating type of interval logfile will be archived 
+       - bkup_inttype: One character designating type of interval logfile will be archived 
          after (i.e., 'D' is day, 'M' is month)
-       - bkup_interval Integer, amount of specified interval logfile will be archived after 
+       - bkup_interval: Integer, amount of specified interval logfile will be archived after 
          (i.e., if bkup_inttype = 'D' and bkup_interval = 30, the file will be 
          archived after 30 days)
-       - bkup_count Integer, how many backup logfiles to keep until all will be deleted 
-       - bkup_suffix String, date format that will be appended to logfile when it is archived
-       - homedir String, filepath
-       - config ConfigParser object, points to config file
+       - bkup_count: Integer, how many backup logfiles to keep until all will be deleted 
+       - bkup_suffix: String, date format that will be appended to logfile when it is archived
+       - homedir: String, filepath
+       - config: ConfigParser object, points to config file
     """
     homedir = d['homedir']
     config = d['config']
