@@ -9,5 +9,11 @@
     "__comment__": "VisibleEarth BlueMarble",
     "__source__": "https://www.h-schmidt.net/map/download.html",
     "__projection__": "PlateCarree",
-    "high": "satellite_large.jpg"}
+    "high": "satellite_large.jpg"},
+
+    "terrain":{
+    "__comment__": "NASA Topography Image",
+    "__source__": "https://neo.sci.gsfc.nasa.gov/view.php?datasetId=SRTM_RAMP2_TOPO",
+    "__projection__": "PlateCarree",
+    "high": "terrain.jpg"}
 }
