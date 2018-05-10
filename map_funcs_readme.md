@@ -54,3 +54,9 @@ All mapping functions will produce maps with the terrain basemap as their defaul
     python -c 'from map_funcs import map_detection; map_detection(detectionID, "satellite")
 
 All maps will be saved to a map folder within the directory where the command was run, inside of a subfolder named after the detection ID the map was created for (for example, ~/tedapp/map/3127/).
+
+The map files follow this naming convention:
+
+    detectionID_mapType_basemapType.png
+
+Where detectionID is an integer, mapType is tweets for map_tweets(), global for map_detection(), and vs_eventName for map_event_vs_detection(), and basemapType is either terrain or satellite.
