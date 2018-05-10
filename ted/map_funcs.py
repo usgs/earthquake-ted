@@ -75,8 +75,8 @@ def connect_to_db():
          config.read_file(open(configfile))
 
          prefix = 'db'
-         # port = config.get('DATABASE',prefix+'_port')
-         port = 5432
+         port = config.get('DATABASE',prefix+'_port')
+         # port = 5432
          user = config.get('DATABASE',prefix+'_user')
          dbname = config.get('DATABASE',prefix+'_name')
          password = config.get('DATABASE',prefix+'_password')
@@ -178,22 +178,22 @@ def get_tweet_map_boundaries(tweetLats, tweetLons):
  
     return(minLon, maxLon, minLat, maxLat)
 
-def get_cities(minPopulation, minLon, maxLon, minLat, maxLat, maxNumCities):
+def get_cities(minLon, maxLon, minLat, maxLat, minPopulation, maxNumCities):
     """
     Uses USGS geoserve to find all of the cities within a given set of boundaries
     and with populations greater than a specified minimum population.
 
-    minPopulation: integer, minimum population to compare cities to
     minLon, maxLon, minLat, maxLat: floats corresponding to map boundaries
+    minPopulation: integer, minimum population to compare cities to
+    maxNumCities: integer, maximum number of cities that will be mapped
 
     Returns: - cityNames: names of cities
              - cityLats, cityLons: coordinates of cities
     """
-    jsonURL = ("https://earthquake.usgs.gov/ws/geoserve/places.json?" + \
-              "minlatitude=" + format(minLat,'.5f') + "&maxlatitude=" + \
-              format(maxLat,'.5f') + "&minlongitude=" + format(minLon,'.5f') + \
-              "&maxlongitude=" + format(maxLon,'.5f') + "&minpopulation=" + \
-              minPopulation + "&type=geonames")
+    jsonURL = "https://earthquake.usgs.gov/ws/geoserve/places.json?"+\
+              "minlatitude="+str(minLat)+"&maxlatitude="+str(maxLat)+\
+              "&minlongitude="+str(minLon)+"&maxlongitude="+str(maxLon)+\
+              "&minpopulation="+str(minPopulation)+"&type=geonames"
 
     response = urllib.urlopen(jsonURL)
     geoserveData = json.load(response)
@@ -241,15 +241,19 @@ def get_cities(minPopulation, minLon, maxLon, minLat, maxLat, maxNumCities):
     minNumCities = 5
     while (cityCount > maxNumCities or minNumCities < minNumCities):
         if cityCount > maxNumCities:
-            minPopulation = str(int(minPopulation) + 20000)
-            cityNames, cityLons, cityLats, cityPops = get_cities(minPopulation, minLon,
-                                                      maxLon, minLat, maxLat, maxNumCities)
+            minPopulation = minPopulation + 20000
+            cityNames, cityLons, cityLats, cityPops = get_cities(minLon, maxLon, 
+                                                                 minLat, maxLat, 
+                                                                 minPopulation, 
+                                                                 maxNumCities)
             cityCount = len(cityNames)
 
         if cityCount < minNumCities:
-            minPopulation = str(int(minPopulation) - 30000)
-            cityNames, cityLons, cityLats, cityPops = get_cities(minPopulation, minLon,
-                                                      maxLon, minLat, maxLat, maxNumCities)
+            minPopulation = minPopulation - 30000
+            cityNames, cityLons, cityLats, cityPops = get_cities(minLon, maxLon, 
+                                                                 minLat, maxLat, 
+                                                                 minPopulation, 
+                                                                 maxNumCities)
             cityCount = len(cityNames)
 
     # Prevent cities from hiding each other on map by defining grid and comparing number
@@ -301,6 +305,60 @@ def get_cities(minPopulation, minLon, maxLon, minLat, maxLat, maxNumCities):
 
     return(newCityNames, newCityLons, newCityLats, newCityPops)
 
+def plot_cities(minLon, maxLon, minLat, maxLat, minPopulation, maxNumCities,
+                basemap, ax):
+    """
+    Plots cities returned by get_cities on map.
+
+    minPopulation: integer, minimum population to compare cities to
+    minLon, maxLon, minLat, maxLat: floats corresponding to map boundaries
+    maxNumCities: integer, maximum number of cities that will be mapped
+    basemap: string designating type of basemap map uses
+    ax: GeoAxes object used for map
+    """
+    # Get cities to map
+    cityNames, cityLons, cityLats, cityPops = get_cities(minLon, maxLon, minLat, 
+                                                         maxLat, minPopulation, 
+                                                         maxNumCities)
+
+    # Find city with biggest population, plot and label on map
+    cityCount = len(cityNames)
+    maxPop = 0
+    maxPopIndex = 0
+    for i in range(0,cityCount):
+        if cityPops[i] > maxPop:
+            maxPop = cityPops[i]
+            maxPopIndex = i
+
+    if basemap == "satellite":
+        dot_color = 'white'
+        text_color = 'white'
+    else:
+        dot_color = 'black'
+        text_color = 'black'
+
+    ax.plot(cityLons[maxPopIndex], cityLats[maxPopIndex], color=dot_color,
+             linewidth=0, marker='o', markersize=8, markeredgecolor='black',
+             markeredgewidth=0.6, transform=ccrs.PlateCarree())
+
+    plt.text(cityLons[maxPopIndex], cityLats[maxPopIndex]-0.4,
+             cityNames[maxPopIndex], color=text_color, fontsize=12, va='top',
+             ha='center')
+
+    # Plot and label all other cities in legend
+    cmap = plt.cm.get_cmap('plasma',len(cityNames)) # colormap
+
+    cityIndicesToPlot = []
+    for i in range(0, cityCount):
+        if i != maxPopIndex:
+            cityIndicesToPlot += [i]
+
+    for i in cityIndicesToPlot:
+        ax.plot(cityLons[i], cityLats[i], color=cmap(i), linewidth=0,
+                 marker='o', markersize=8, markeredgecolor='black',
+                 markeredgewidth=0.6, transform=ccrs.PlateCarree(),
+                 label=str(cityNames[i]))
+
 def map_detection(detectionID, basemap="terrain"):
     """
     Creates global map showing coordinates of TED detection and saves it within the map
@@ -341,13 +399,16 @@ def map_detection(detectionID, basemap="terrain"):
         # Select the projection you want, plot the resolution you wish to use
         valid_options = ["terrain","satellite"]
         if basemap == "terrain":
+            ax1 = plt.subplot(111,projection=ccrs.PlateCarree())
+            ax1.background_img(name='terrain', resolution='high')
+        elif basemap == "terrain_og": # Original terrain map with cartopy 
+                                      # stock image
             ax1 = plt.axes(projection=ccrs.PlateCarree())
             ax1.coastlines()
             ax1.stock_img() 
         elif basemap == "satellite":
             ax1 = plt.subplot(111,projection=ccrs.PlateCarree())
             ax1.background_img(name='satellite_small', resolution='high')
-            ax1.coastlines(resolution='110m')
         else:
             warning_string = "No valid basemap option detected. Please enter" + \
                              "one of these options: %s. Exiting" % valid_options
@@ -399,18 +460,9 @@ def map_tweets(detectionID, basemap="terrain"):
         # Select the projection you want, plot the resolution you wish to use
         valid_options = ["terrain","satellite"]
         if basemap == "terrain":
-            ax2 = plt.axes(projection=ccrs.PlateCarree())
+            ax2 = plt.subplot(111,projection=ccrs.PlateCarree())
+            ax2.background_img(name='terrain', resolution='high')
             ax2.set_extent([minLon, maxLon, minLat, maxLat])
-            ax2.stock_img()
-            ax2.add_feature(LAND)
-            ax2.add_feature(LAKES)
-            ax2.coastlines(resolution='10m')
-
-            # Add states/provinces
-            STATES = NaturalEarthFeature(category='cultural',scale='10m',
-                                         facecolor='none',
-                                         name='admin_1_states_provinces_lines')
-            ax2.add_feature(STATES,edgecolor='gray')
         elif basemap == "satellite":
             ax2 = plt.subplot(111,projection=ccrs.PlateCarree())
             ax2.background_img(name='satellite_large', resolution='high')
@@ -431,7 +483,7 @@ def map_tweets(detectionID, basemap="terrain"):
         # Plot the first tweet separately so that marker appears in legend
         plt.plot(tweetLons[0], tweetLats[0], color='blue', linewidth=0,
                  marker='o',markersize=12,transform=ccrs.PlateCarree(),
-                 label='Tweet')
+                 label='Tweet Location(s)')
         plt.plot(tweetLons, tweetLats, color='blue', linewidth=0,
                  marker='o',markersize=12,transform=ccrs.PlateCarree())
 
@@ -441,22 +493,11 @@ def map_tweets(detectionID, basemap="terrain"):
             plt.text(key[0], key[1], countCoords[key], fontsize=12, 
                      fontweight='bold', color='w', va='center', ha='center')
 
-        # Get cities for map    
-        minPopulation_tweetMap = "100000"
+        # Plot cities on map
+        minPopulation = 100000
         maxNumCities = 10
-        cityNames, cityLons, cityLats, cityPops = get_cities(minPopulation_tweetMap,
-                                                  minLon, maxLon, minLat, maxLat,
-                                                  maxNumCities)
-
-        # Plot cities
-        cityCount = len(cityNames)
-        cmap = plt.cm.get_cmap('plasma',len(cityNames)) # colormap
-
-        for i in range(0,cityCount):
-            ax2.plot(cityLons[i], cityLats[i], color=cmap(i), linewidth=0,
-                     marker='o', markersize=8,markeredgecolor = 'black',
-                     markeredgewidth=0.6, transform=ccrs.PlateCarree(),
-                     label=str(cityNames[i]))
+        plot_cities(minLon, maxLon, minLat, maxLat, minPopulation, maxNumCities,
+                    basemap, ax2)
 
         # Create legend outside of map to the right
         box = ax2.get_position()
@@ -539,18 +580,9 @@ def map_event_vs_detection(detectionID, eventID, basemap="terrain"):
         # Select the projection you want, plot the resolution you wish to use
         valid_options = ["terrain","satellite"]
         if basemap == "terrain":
-            ax3 = plt.axes(projection=ccrs.PlateCarree())
+            ax3 = plt.subplot(111,projection=ccrs.PlateCarree())
+            ax3.background_img(name='terrain', resolution='high')
             ax3.set_extent([minLon, maxLon, minLat, maxLat])
-            ax3.stock_img()
-            ax3.add_feature(LAND)
-            ax3.add_feature(LAKES)
-            ax3.coastlines(resolution='10m')
-
-            # Add states/provinces
-            STATES = NaturalEarthFeature(category='cultural',scale='10m',
-                                         facecolor='none',
-                                         name='admin_1_states_provinces_lines')
-            ax3.add_feature(STATES,edgecolor='gray')
         elif basemap == "satellite":
             ax3 = plt.subplot(111,projection=ccrs.PlateCarree())
             ax3.background_img(name='satellite_large', resolution='high')
@@ -571,26 +603,12 @@ def map_event_vs_detection(detectionID, eventID, basemap="terrain"):
                              markersize=12, label="Detection",
                              transform=ccrs.PlateCarree())
 
-        # Get nearby cities for map
-        minPopulation = "100000"
-        maxNumCities = 10
-        cityNames, cityLons, cityLats, cityPops = get_cities(minPopulation, minLon,
-                                                  maxLon, minLat, maxLat, maxNumCities)
-
-        logger.info("The following cities were returned to be mapped: %s", cityNames)
-        logger.info("City latitudes: %s", cityLats)
-        logger.info("City longitudes: %s", cityLons)
-        logger.info("City populations: %s", cityPops)
-
         # Plot cities on map
-        cityCount = len(cityNames)
-        cmap = plt.cm.get_cmap('plasma',len(cityNames)) # colormap
+        minPopulation = 100000
+        maxNumCities = 10
+        plot_cities(minLon, maxLon, minLat, maxLat, minPopulation, maxNumCities,
+                    basemap, ax3)
 
-        for i in range(0,cityCount):
-            ax3.plot(cityLons[i], cityLats[i], color=cmap(i), linewidth=0,
-                     marker='o', markersize=8,markeredgecolor = 'black',
-                     markeredgewidth=0.6, transform=ccrs.PlateCarree(),
-                     label=str(cityNames[i]))
 
         # Create legend outside of map to the right
         box = ax3.get_position()
