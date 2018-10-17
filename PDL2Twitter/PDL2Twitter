@@ -1,5 +1,10 @@
 #!/usr/bin/env python
 
+"""
+Twitter2Pg - An application for taking filtered tweets from
+                a stream and inserting them into a posgres database
+"""
+
 import sys
 import os.path
 import time
@@ -16,11 +21,6 @@ import tweepy
 
 # Local imports 
 from Twitter2Pg_funcs import create_logger
-
-"""
-Twitter2Pg - An application for taking filtered tweets from
-                a stream and inserting them into a posgres database
-"""
 
 #############################################################
 # streamlistener class
