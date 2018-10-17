@@ -1,621 +1,405 @@
 #!/usr/bin/env python
 
-from argparse import ArgumentParser
-import os.path
-import logging.handlers
-from datetime import datetime
-from datetime import timedelta
 import sys
-import configparser
-import sqlite3
-import warnings
-import socket
+import os.path
 import time
-import urllib.request
-import urllib.parse
-import urllib.error
-import json
+from argparse import ArgumentParser
+import configparser
+import codecs
+import logging.handlers
 import psycopg2
+import json
 import tweepy
+#from tweepy import Stream
+#from tweepy import OAuthHandler
+#from tweepy.streaming import StreamListener
+
 # Local imports 
-from PDL2Twitter_funcs import create_logger, get_region_name
+from Twitter2Pg_funcs import create_logger
 
 """
-PDL2Twitter - An application for tweeting new earthquake events based on
-              events sent by PDL
+Twitter2Pg - An application for taking filtered tweets from
+                a stream and inserting them into a posgres database
 """
 
-
-####################
-def create_event_dict():
-    """
-    Purpose: Creates the event dictionary that's referenced throughout the code.
-             The event dictionary stores the required arguments passed in on the
-             command line.
-
-    Arguments: None
-
-    Returns: The event dictionary.  This function defines that dictionary.
-             All event dictionary items are STRINGS
-    """
-        # load the static part of the dictionary
-    try:
-        eventdict = {}
-        # these come directly from command line
-        eventdict['id'] = options['preferredID'].lower()
-        eventdict['source'] = options['source'].lower()
-        eventdict['time'] = eventdatetime.strftime('%Y%m%d%H%M%S.00')
-        eventdict['lat'] = '%.4f' % float(options['preferredLatitude'])
-        eventdict['lon'] = '%.4f' % float(options['preferredLongitude'])
-        eventdict['mag'] = '%.1f' % float(options['preferredMagnitude'])
-        eventdict['eventType'] = options['eventType']
-        eventdict['action'] = options['action']
-        eventdict['code'] = options['code'].lower()
-        eventdict['depth'] = '%.2f' % float(options['preferredDepth'])
-
-        # the following don't come from the command line
-        urlt = config.get('SETUP', 'long_urltemplate')
-        eventdict['uri'] = urlt.replace('[EVENT]', options['preferredID'].lower())
-
-        # PROGRAMMER NOTE:  eventdict['fe_region'] is F/E region and should be
-        # obtained once, and only if needed.  To accomplish that, the
-        # key is registered with no value (and referenced later to see
-        # if the F/E regionis needed)
-        eventdict['fe_region'] = None
-
-        # PROGRAMMER NOTE:  eventdict['shorturl'] the URL to the event page
-        # which normally is the GoUSA short URL.  The short URL should
-        # be obtained once, and only if needed.  To accomplish that, the
-        # key is registered with no value (and referenced later to see
-        # if the short URL is needed)
-        eventdict['shorturl'] = None
-
-        # event_time is for the INSERT INTO event_time column
-        etime = options['preferredEventTime']
-        etime = etime.replace("T", " ")
-        etime = etime.replace("Z", "")
-        eventdict['event_time'] = etime
-
-    except Exception as e:
-        log_msg = "  Error creating Event dictionary"
-        logger.error(log_msg, exc_info=True)
-        sys.exit(1)
-
-    return eventdict
-
-
-####################
-def check_event(edict, account_id):
-    """
-    Purpose: Runs checks to see if event should be tweeted.
-
-    Arguments: edict - see create_event_dict
-               account_id: twitter account ID 
-
-    Returns: a boolean and a message string explaining the outcome
-             of the checks
-    """
-    eid = edict['id']
-    etime = edict['time']
-    mag = edict['mag']
-    lat = edict['lat']
-    lon = edict['lon']
- 
-    # Check 1: event is not too old
-    timethresh = int(config.get('SETUP', 'timethresh'))
-    eventdt = datetime.strptime(str(etime), '%Y%m%d%H%M%S.%f')
-    mineventdt = utcnow - timedelta(minutes=timethresh)
-
-    if (eventdt < mineventdt):
-        msg = ("Ignoring because timestamp {} is older than"
-               " minimum tweetable time {}")
-        msg = msg.format(str(eventdt), str(mineventdt))
-        return (False, msg)
-
-    # Check 2: event is not in the future
-    if (eventdt > utcnow):
-        msg = ("Ignoring because future time is {}")
-        msg = msg.format(str(eventdt))
-        return (False, msg)
-
-    # Check 3: event has not already been tweeted from given twitter account_id
-    query = "select event_id from tweet_audit where event_id = '" + eid + "'" \
-            " AND account_id =  '" + account_id + "'"
-    longquery = query + " union select NULL where not exists (" + query + ");"
-    cur.execute(longquery)
-    tweetmatch = cur.fetchone()[0]
-
-    if tweetmatch is not None:
-        msg = "Ignoring already tweeted event"
-        return (False, msg)
-
-    # Check 4: tweet has not already been sent for another event which is
-    # close in time and space to this event (from given twitter account_id)
-    tooclosedistance = config.get('SETUP', 'tooclosedistance')
-    toooldtime = config.get('SETUP', 'toooldtime')
-    latlondiff = format((int(tooclosedistance)/111), '.1f')
-    eventtime = etime[:8] + 'T' + etime[8:]
-
-    query = ("select event_id from tweet_audit where (event_time <= (timestamp'{0}' + interval "
-             "'{1}' minute) and event_time >= (timestamp'{2}' - interval '{3}' minute)) and "
-             "abs(event_lat - {4}) <= {5} and abs(event_lon - {6}) <= {7} and account_id = '{8}'")
-    query = query.format(eventtime, toooldtime, eventtime, toooldtime, lat, str(latlondiff),
-                         lon, str(latlondiff), account_id)
-    longquery = query + " union select NULL where not exists (" + query + ");"
-    cur.execute(longquery)
-    tweetmatch = cur.fetchone()[0]
-
-    if tweetmatch is not None:
-        msg = ("Ignoring because it is too close in time and"
-               " location to already tweeted event {}")
-        msg = msg.format(tweetmatch)
-        return (False, msg)
-
-    # good - parameters passed all checks
-    msg = '  Passed all checks, processing... '
-    return (True, msg)
-
-
-####################
-def get_short_url(edict):
-    """
-    Purpose: Use Go.USA.gov API to shorten url to event page (on 
-             earthquake.usgs.gov) for tweets
-
-    Arguments: edict - see create_event_dict
-
-    Returns: shortened url STRING- if an error is encountered, the unshortened url
-             will be returned
-    """
-    # get the GoUSA username, apikey, and URL from config file
-    gousa_username = config.get('GOUSA', 'gousa_username')
-    gousa_apikey = config.get('GOUSA', 'gousa_apikey')
-    gousa_url = config.get('GOUSA', 'gousa_urltemplate')
-
-    # get the long URL (the event page on earthquake.usgs.gov) from
-    # the command line and make a version of it that's suitable for
-    # passing as a URL arg
-    longurl = edict['uri']
-    longurl_arg = longurl.replace('://','%3A%2F%2F')
-    longurl_arg = longurl_arg.replace('/','%2F')
-
-    # fill in the GoUSA URL template
-    gousa_url = gousa_url.replace('[LOGIN]', gousa_username)
-    gousa_url = gousa_url.replace('[KEY]', gousa_apikey)
-    gousa_url = gousa_url.replace('[LONGURL]', longurl_arg)
-
-    # Connect to GoUSA api via the URL
-    # Try up to 3 time to get it, then bail
-    got_url = False
-    retry_max = 3
-    for try_number in range(0, retry_max):
-        # sleep time goes from 0 to 2 to 4 seconds
-        sleep_time = try_number * 2
-        time.sleep(sleep_time)
-        log_msg = ("  eventID {} - GoUSA API access attempt {}")
-        log_msg = log_msg.format(edict['id'],
-                                 str(try_number+1))
-        logger.info(log_msg)
-        gousa_request = urllib.request.Request(gousa_url)
+#############################################################
+# streamlistener class
+class listener(tweepy.StreamListener):
+    def on_data(self, data):
         try:
-            gousa_response = urllib.request.urlopen(gousa_request, timeout=60)
-            got_url = True
-        except urllib.error.URLError as e:
-            log_msg = ("  eventID {} - GoUSA API access error"
-                       " - urlopen returned URLError {}")
-            log_msg = log_msg.format(edict['id'], e.reason)
-            logger.warning(log_msg)
-            continue
-        except urllib.error.HTTPError as e:
-            log_msg = ("  eventID {} - GoUSA API access error"
-                       " - urlopen returned HTTPError code {} ({})")
-            log_msg = log_msg.format(edict['id'], e.code, e.read())
-            logger.warning(log_msg)
-            continue
-        except timeout:
-            log_msg = ("  eventID {} - GoUSA API access error"
-                       " - socket timed out")
-            log_msg = log_msg.format(edict['id'])
-            logger.warning(log_msg)
-            continue
+            tweet = json.loads(data) # load it as Python dict
+            process_tweet(tweet)
+        except:
+            print('get_tweet_stream put error')
+        return True
 
-        if got_url is False:
-            if try_number <= retry_max:
-                log_msg = ("  eventID {} - GoUSA API access failure, try again")
-                log_msg = log_msg.format(edict['id'])
-                logger.warning(log_msg)
-                continue
-            else:
-                log_msg = ("  eventID {} - GoUSA API access failure"
-                   " retries exhausted - will use long URL")
-                log_msg = log_msg.format(edict['id'])
-                logger.warning(log_msg)
-                return longurl
+    def on_error(self, status):
+        print(status)
 
-        # get the content and close the response
-        html = gousa_response.read().decode('utf-8')
-        gousa_response.close()
 
-        # convert the content into a json object
-        json_object = json.loads(html)
-
-        # the GoUSA response dictionary for bad username or
-        # apikey is different from the dictionary returned for a
-        # normal response.  Scan the html returned to see if it
-        # contains "statusCode":"ERROR" -- if it does, then an
-        # error occurred.
-        error_string = '"statusCode":"ERROR"'
-        if error_string.lower() in html.lower():
-            statusCode = json_object['response']['statusCode']
-            errorCode = json_object['response']['errorCode']
-            errorMessage = json_object['response']['errorMessage']
-            log_msg = ("    eventID {} - GoUSA API connect error"
-                       " - statusCode: {}  errorCode: {}  errorMessage: {}")
-            log_msg = log_msg.format(edict['id'],
-                                     statusCode,
-                                     errorCode,
-                                     errorMessage)
-            logger.warning(log_msg)
-            continue
-
-        # The json dict for a successful response will have an item
-        # with key '['0'][0]['status_code'] and one with key
-        # ['data']['entry'][0]['short_url'].
-        # Make sure they are both there and that status_code is 200 (OK)
-        status_code = json_object['response']['0'][0]['status_code']
-        shorturl = json_object['response']['data']['entry'][0]['short_url']
-        if (status_code is None or shorturl is None or status_code != '200'):
-            log_msg = ("  eventID {} = GoUSA API Response error (unknown reason)"
-                       " - short URL not returned"
-                       " - will use long URL")
-            log_msg = log_msg.format(edict['id'])
-            logger.warning(log_msg)
-            return longurl
-                
-        # looks like a short URL was obtained, return it
-        return shorturl
-
-    log_msg = ("    eventID {} = GoUSA API gave no short URL"
-               " - will use long URL")
-    log_msg = log_msg.format(edict['id'])
-    logger.warning(log_msg)
-
-    return longurl
-        
-
-####################
-def add_tweet_to_db(edict, tweetstring, account_id):
+#----------------------------------
+def process_tweet(tweet):
     """
-    Purpose: Adds tweeted event to tweet_audit table in database.
-
-    Arguments: edict - see create_event_dict
-               tweetstring: String that was tweeted out for event.
-               account_id: twitter account ID
-
+    Purpose: Calls load_message_dict to load the dictionary.
+             Makes sure the required fields are present.  If
+             they are, the tweet is inserted into the message table
+             if at least one filter term is present in the text, but
+             the text does not contain https
+    Arguments: tweet object
     Returns: None
     """
-    eid = edict['id']
-    etime = edict['time']
-    mag = edict['mag']
-    lat = edict['lat']
-    lon = edict['lon']
 
-    eventtime = etime[:8] + 'T' + etime[8:]
+    # load the message dictionary
+    message_dict = load_message_dict(tweet)
 
-    try:
-        cur.execute("insert into tweet_audit (event_id, event_lat, event_lon, event_time, " + \
-                    "magnitude, tweet_time, tweet_text, account_id) values (%s, %s, %s, %s, %s, %s, %s, %s);",
-                    (eid, lat, lon, eventtime, mag, utcnow, tweetstring, account_id))
-        log_msg = ("  eventID {} = Recorded Tweet from {} account"
-                   " in tweet_audit table")
-        log_msg = log_msg.format(eid, account_id)
+    # make sure the twitter_id is present
+    if (message_dict['twitter_id'] == 'NULL'):
+        log_msg = 'tweet has no id_str - discarding'
         logger.info(log_msg)
-    except Exception as e:
-        log_msg = ("eventID {} - '{}' account: Failed to insert row"
-                   " into tweet_audit table")
-        log_msg = log_msg.format(eid, account_id)
-        logger.error(log_msg, exc_info=True)
+        return
+
+    # make sure the other non-null columns are present
+    # since dollar signs are removed from text, make sure there's
+    # still something there
+    if (message_dict['text'] == 'NULL' or message_dict['text'] == '$$$$'):
+        log_msg = ('tweet {} missing text  - discarding')
+        log_msg = log_msg.format(message_dict['twitter_id'])
+        logger.info(log_msg)
+        return
+
+    if (message_dict['twitter_date'] == 'NULL'):
+        log_msg = ('tweet {} missing twitter_date  - discarding')
+        log_msg = log_msg.format(message_dict['twitter_id'])
+        logger.info(log_msg)
+        return
+
+    if (message_dict['twitter_date'] == 'NULL'):
+        log_msg = ('tweet {} missing twitter_date  - discarding')
+        log_msg = log_msg.format(message_dict['twitter_id'])
+        logger.info(log_msg)
+        return
+
+    # make sure at least one of the filter terms in in the 'text'
+    # field of the tweet.  If one is found, add the message to the DB
+    add_message = False
+    log_msg = ("reject - no filter terms in tweet")
+    for term in filter_list:
+        if term in message_dict['text']:
+            add_message = True
+            break
+
+    # if filter_RT_out is True, discard tweets starting
+    # with RT
+    if (add_message is True
+        and twitter_dict['filter_RT_out'] is True):
+            # Note: string starts with double dollar signs
+            if (message_dict['text'][2:4] == 'RT'):
+                add_message = False
+                log_msg = ("reject - tweet starts with RT")
+
+    # see if filter_terms_out is defined, and process accordingly
+    if (add_message is True
+        and twitter_dict['filter_terms_out'] is not None):
+            # make a list of the filter terms and see if the text contains
+            # any of them - if it does, discard tweet
+            term_list = twitter_dict['filter_terms_out'].split(",")
+            for term in term_list:
+                if (term.lower() in message_dict['text'].lower()):
+                    add_message = False
+                    log_msg = ("reject - tweet contains '{}'")
+                    log_msg = log_msg.format(term)
+                    break
+
+    # if, at this point, the tweet should be added, look to see if
+    # foreign_location_translations has been set in the .ini file, it
+    # contains a list of 2-character Twitter lang codes (the list may have
+    # just one entry).  The foreign_location_translations DB table should
+    # contain rows for the given lang that contain info on how to (maybe)
+    # translate the location_string into english
+    if (add_message is True 
+        and twitter_dict['foreign_location_translations'] is not None):
+        lang_list = twitter_dict['foreign_location_translations'].split(",")
+        for lang in lang_list:
+            # don't forget lang is wrapped in double $
+            msg_dict_lang = message_dict['lang'].replace('$','')
+            #print("lang: " + lang + "    msg_dict_lang: " + msg_dict_lang)
+            if (lang == msg_dict_lang):
+                # don't process if location_string is NULL
+                if (message_dict['location_string'] == 'NULL'):
+                    break  # out of for lang in lang_list
+
+                log_msg = ("Attempting foreign location translation for lang = '{}'")
+                log_msg = log_msg.format(lang)
+                logger.info(log_msg)
+           
+                #print("foreign_location_translation ENABLED for " + lang)
+                query = "SELECT english_translation, aliases, priority FROM foreign_location_translations WHERE lang = '{}' ORDER BY priority"
+                query = query.format(lang)
+                translated = False
+                try:
+                    cur.execute(query)
+                    rows = cur.fetchall()
+                    for row in rows:
+                        english_translation = row[0]
+                        alias_list = row[1].split(",")
+                        #print("\tenglish_translation: " + english_translation)
+                        for alias in alias_list:
+                            if (alias in message_dict['location_string']):
+                                translated = True
+                                break  # out of for alias in alias_list 
+                        cur.close
+                        if (translated is True):
+                            break  # break out of for row in rows...
+                except (Exception, psycopg2.DatabaseError) as error:
+                    log_msg = ("error '{}' processing cursor for"
+                               " SELECT FROM foreign_location_translations")
+                    log_msg = log_msg.format(error)
+                    logger.info(log_msg)
+                    pass
+                if (translated is True):
+                    message_dict['location_string'] = "$$" + english_translation + "$$"
+                    log_msg = ("translated foreign location_string to '{}'")
+                    log_msg = log_msg.format(english_translation)
+                    logger.info(log_msg)
+
+    if add_message:
+        add_message_to_db(message_dict)
+    else:
+        logger.info(log_msg)
+
+    return
 
 
-####################
-def add_event_to_db(edict):
+#----------------------
+def load_message_dict(tweet):
     """
-    Purpose: Adds event to event table in database.
+    Purpose: Copies tweet fields into the message dictionary.
+             The dictionary contains all the needed message
+             table columns.
+             Sets dictionary values to NULL when appropriate,
+             removes dollar signs ($) from text, and wraps
+             wraps text fields double dollars signs ($$)
+    Arguments: tweet object
+    Returns: message dictionary
+    """
+    # clear out the dict - NOTE: all entries are strings
+    msg_dict = {}
 
-    Arguments: edict - see create_event_dict
+    # these are static
+    msg_dict['date_created'] = 'now()'
+    msg_dict['to_be_geo_located'] = 'True'
 
+    msg_dict['twitter_id'] = 'NULL'
+    if ('id_str' in tweet and tweet['id_str'] is not None):
+        msg_dict['twitter_id'] = tweet['id_str']
+        msg_dict['twitter_id'] = msg_dict['twitter_id'].replace('$','')
+        msg_dict['twitter_id'] = msg_dict['twitter_id']
+    else:
+        return msg_dict
+
+    # the following are all NOT NULL and have to be present in
+    # the tweet
+    msg_dict['text'] = 'NULL'
+    if ('text' in tweet and tweet['text'] is not None):
+        msg_dict['text'] = tweet['text']
+        msg_dict['text'] = msg_dict['text'].replace('$','')
+        tmpList = msg_dict['text'].split()
+        msg_dict['text'] = '$$' + msg_dict['text'] + '$$'
+    else:
+        return msg_dict
+
+    msg_dict['twitter_date'] = 'NULL'
+    if ('created_at' in tweet and tweet['created_at'] is not None):
+        msg_dict['twitter_date'] = tweet['created_at']
+    else:
+        print('tweet ' + tweet['id_str'] + ' has no created_at  - discarding')
+        return msg_dict
+
+    # any/all of the following may be NULL
+    # unravel coordinates - if present, turn them into a geometry type
+    msg_dict['location'] = 'NULL' # type = geometry
+
+    msg_dict['location_string'] = 'NULL'
+    msg_dict['location_type'] = 'NULL'
+    msg_dict['opt_location_string'] = 'NULL'
+    msg_dict['orig_location_string'] = 'NULL'
+    if ('location' in tweet['user'] and tweet['user']['location'] is not None):
+        msg_dict['location_string'] = tweet["user"]["location"]
+        msg_dict['location_string'] = '$$' + msg_dict['location_string'].replace('$','') + '$$'
+        msg_dict['opt_location_string'] =  msg_dict['location_string'].lower()
+        msg_dict['orig_location_string'] = '$$' + tweet["user"]["location"].replace('$','')  + '$$'
+        msg_dict['location_type'] = "'Location-String'"
+
+    # make sure to process this AFTER location_type is done (above)
+    if ('coordinates' in tweet and tweet['coordinates'] is not None):
+        if ('type' in tweet['coordinates']
+            and tweet['coordinates']['type'] is not None
+            and tweet['coordinates']['type'] == 'Point'):
+            lon = str(tweet['coordinates']['coordinates'][0])
+            lat = str(tweet['coordinates']['coordinates'][1])
+            temp_loc = 'st_SetSrid(st_MakePoint({}, {}), 4326)'
+            msg_dict['location'] = temp_loc.format(lon, lat)
+            if (msg_dict['location_type'] == 'NULL'):
+                msg_dict['location_type'] = "'GeoLocation'"
+
+    msg_dict['in_reply_to_message_id'] = 'NULL'
+    if ('in_reply_to_status_id_str' in tweet and tweet['in_reply_to_status_id_str'] is not None):
+        msg_dict['in_reply_to_message_id'] = tweet['in_reply_to_status_id_str']
+
+    msg_dict['lang'] = 'NULL'
+    if ('lang' in tweet['user'] and tweet['user']['lang'] is not None):
+        # if lang code is longer than expected, log and correct
+        if (len(tweet['user']['lang']) > 5):
+            log_msg = ("LANG overflow: lang = '{}'")
+            log_msg = log_msg.format(tweet['user']['lang'])
+            logger.warning(log_msg)
+            tweet['user']['lang'] = tweet['user']['lang'][0:5]
+        msg_dict['lang'] = "$$" + tweet['user']['lang'] + "$$"
+   
+    msg_dict['media_display_url'] = 'NULL'
+    msg_dict['media_type'] = 'NULL'
+    if ('media' in tweet['entities']):
+        #print('tweet[entities][media]: ' + json.dumps(tweet['entities']['media'], indent=4))
+        if ('display_url' in tweet['entities']['media'][0] and tweet['entities']['media'][0]['display_url'] is not None):
+            msg_dict['media_display_url'] = tweet['entities']['media'][0]['display_url']
+            msg_dict['media_display_url'] = msg_dict['media_display_url'].replace('$','')
+            msg_dict['media_display_url'] = '$$' + msg_dict['media_display_url'] + '$$'
+        if ('type' in tweet['entities']['media'][0] and tweet['entities']['media'][0]['type'] is not None):
+            msg_dict['media_type'] = tweet['entities']['media'][0]['type']
+            msg_dict['media_type'] = msg_dict['media_type'].replace('$','')
+            msg_dict['media_type'] = '$$' + msg_dict['media_type'] + '$$'
+
+    msg_dict['time_zone'] = 'NULL'
+    if ('time_zone' in tweet['user'] and tweet['user']['time_zone'] is not None):
+        msg_dict['time_zone'] = "$$" + tweet['user']['time_zone'] + "$$"
+
+    return msg_dict
+
+
+#----------------------
+def add_message_to_db(msg_dict):
+    """
+    Purpose: Creates an INSERT INTO query for the message
+             table using the message dictionary to get the
+             values.
+    Arguments: message dictionary
     Returns: None
     """
-    # create the INSERT query
-    query = ("INSERT INTO event (id, version,"
-             " date_created, last_updated, location,"
-             " event_id, depth, event_time, magnitude, mini_uri,"
-             " network_code, region_name, uri"
+    # create the query
+    query = ("INSERT INTO message ("
+             " date_created,"           # 1
+             " twitter_id,"             # 2
+             " twitter_date,"           # 3
+             " to_be_geo_located,"      # 4
+             " text,"                   # 5
+             " location_string,"        # 6
+             " opt_location_string,"    # 7
+             " orig_location_string,"   # 8
+             " location_type,"          # 9
+             " location,"               # 10
+             " in_reply_to_message_id," # 11
+             " lang,"                   # 12
+             " media_display_url,"      # 13
+             " media_type,"             # 14
+             " time_zone"               # 15
              " ) VALUES ("
-             " nextval('event_id_sequence'::regclass), 0,"
-             " now()::timestamp, now()::timestamp,"
-             " st_SetSrid(st_MakePoint({}, {}), 4326),"
-             " '{}', {}, '{}'::timestamp, {}, '{}', '{}', '{}', '{}')")
-    query = query.format(edict['lon'], edict['lat'],
-                         edict['id'], edict['depth'],
-                         edict['event_time'], edict['mag'], edict['shorturl'],
-                         edict['source'], edict['fe_region'],
-                         edict['uri'])
+             " {},"                     # 1
+             " {},"                     # 2
+             " to_timestamp('{}','Dy Mon DD HH24:MI:SS SSSS YYYY'),"   # 3
+             " {},"                     # 4
+             " {},"                     # 5
+             " {},"                     # 6
+             " {},"                     # 7
+             " {},"                     # 8
+             " {},"                     # 9
+             " {},"                     # 10
+             " {},"                     # 11
+             " {},"                     # 12
+             " {},"                     # 13
+             " {},"                     # 14
+             " {}"                      # 15
+             ") ON CONFLICT DO NOTHING")
+    query = query.format(msg_dict['date_created'],               # 1
+                         msg_dict['twitter_id'],                 # 2
+                         msg_dict['twitter_date'],               # 3
+                         msg_dict['to_be_geo_located'],          # 4
+                         msg_dict['text'],                       # 5
+                         msg_dict['location_string'],            # 6
+                         msg_dict['opt_location_string'],        # 7
+                         msg_dict['orig_location_string'],       # 8
+                         msg_dict['location_type'],              # 9
+                         msg_dict['location'],                   # 10
+                         msg_dict['in_reply_to_message_id'],     # 11
+                         msg_dict['lang'],                       # 12
+                         msg_dict['media_display_url'],          # 13
+                         msg_dict['media_type'],                 # 14
+                         msg_dict['time_zone'])                  # 15
+
 
     # execute the query, trapping any errors
     try:
         cur.execute(query)
-        log_msg = ("  Added eventID {} to event table")
-        log_msg = log_msg.format(edict['id'])
+        log_msg = ("ACCEPT {}")
+        log_msg = log_msg.format(msg_dict['twitter_id'])
         logger.info(log_msg)
     except Exception as e:
-        log_msg = ("eventID {} - Failed to insert row"
-                   " into event table")
-        log_msg = log_msg.format(edict['id'])
+        log_msg = ("Error {} inserting twitter_id = {}")
+        log_msg = log_msg.format(e, msg_dict['twitter_id'])
         logger.error(log_msg, exc_info=True)
 
     return
 
 
 ####################
-def tweet_event(edict, account_id):
+def validate_config_file(config):
     """
-    Purpose: Tweet out earthquake information through Twitter Web API.
+    Purpose: Process config file to ensure all sections and key/value pairs.
+             are present.  Also, initialize and load the data dictionaries
+             for each section.
 
-    Arguments: edict - see create_event_dict
-               account_id: twitter account id
+    Notes:   The configuration file is processed before logging starts
+             (because the SETUP section contains logging parameters).
+             Therefore, errors have to be printed to stdout (not the log
+             file)
+         
+    Arguments: handle to config file
 
-    Returns (boolean, msg, time, tweet).
-               boolean: tweet_event() completed without errors
-               msg: errormsg if boolean = FALSE, successmsg if boolean = TRUE
-               time: time to tweet event after tweet_event() was called
-               tweet: the tweet that was sent
+    Returns: setup_dict, db_dict, twitter_dict
     """
-    t1 = datetime.now()
-    eid = edict['id']
-    etime = edict['time']
-    mag = edict['mag']
-    lat = edict['lat']
-    lon = edict['lon']
-    loc = edict['fe_region']
-    eventType = edict['eventType']
-    shorturl = edict['shorturl']
 
-    # Get tokens for given account from config file
-    # NOTE - the caller (call_tweeter) has already checked to make
-    # sure all the tokens are present
-    twitterapikey = config.get('TWITTER', account_id + '_apikey')
-    apisecret = config.get('TWITTER', account_id + '_apisecret')
-    accesstoken = config.get('TWITTER', account_id +  '_accesstoken')
-    secrettoken = config.get('TWITTER', account_id + '_accesstoken_secret')
-    origindate = eventdatetime.strftime('%b-%d %H:%M UTC')
+    # initialize the section dictionaries
+    setup_dict = {}
+    db_dict = {}
+    twitter_dict = {}
 
-    # Create message that will be tweeted
-    tweetstring = "Prelim M{} {} {} {}, updates {}"
-    tweetstring = tweetstring.format(mag, eventType, loc,
-                                     origindate, shorturl)
-
-    try:
-        # Connect to twitter API and send tweet
-        auth = tweepy.OAuthHandler(twitterapikey, apisecret)
-        auth.set_access_token(accesstoken, secrettoken)
-        api = tweepy.API(auth)
-
-        status = api.update_status(tweetstring)
-        
-        # Calculate time it took to tweet event
-        t2 =  datetime.now()
-        td = t2 - t1
-  
-        # Add tweeted event to tweet_audit table
-        add_tweet_to_db(edict, tweetstring, account_id)
-
-        return(True, tweetstring, td, tweetstring)
-
-    except Exception as e:
-        log_msg = "eventID {} - '{}' account: Tweet send failure"
-        log_msg = log_msg.format(eid, account_id)
-        logger.warning(log_msg)
-        return(False, e, 0, '')
-
-
-####################
-def call_tweeter(edict):
-    """
-    Purpose: Process the PDL event
-
-    Arguments: edict: the event dictionary (see create_event_dict)
-
-    Returns: None
-    """
-    # event must be 'event added' or 'event updated'
-    if edict['action'] not in ['EVENT_ADDED', 'EVENT_UPDATED']:
-        log_msg = ("  eventID {} - Unacceptable action '{}'"
-                   " Ignoring all actions but 'EVENT_ADDED' and "
-                   " EVENT_UPDATED'")
-        log_msg = log_msg.format(edict['id'], edict['action'])
-        logger.info(log_msg)
-        return
-
-    # Skip if network source is in ignoreregions list
-    ignoreregions = config.get('SETUP','ignoreregions').split(',')
-    if edict['source'] in ignoreregions:
-        log_msg = "  eventID {} - Ignoring region '{}'"
-        log_msg = log_msg.format(edict['id'], edict['source'])
-        logger.info(log_msg)
-        return
-
-    # Skip if event code is not same as preferred event ID
-    if edict['code'] != edict['id']:
-        log_msg = "  eventID {} - Ignoring non-preferred ID '{}'"
-        log_msg = log_msg.format(edict['id'], edict['code'])
-        logger.info(log_msg)
-        return
-
-    # entry goes into event table once
-    event_added = False
-
-    # if control gets here, the event should be tweeted, taking into
-    # consideration there can be multiple accounts to process
-    # Inspect [TWITTER] section of config file to determine which accounts
-    # to process.  Commenting one or more lines for any account disables it
-    accounts = ['general', 'significant', 'test', 'dev']
-    tokens = ['apikey', 'apisecret', 'accesstoken',
-                  'accesstoken_secret', 'magthresh']
-    for account_id in accounts:
-        account_dict = {}
-        for token in tokens:
-            key = account_id + '_' + token
-            account_dict[token] = config.get('TWITTER', key, fallback = None)
-
-        # all key/value pairs have to be present to proceed, but (by design)
-        # it is not an error if one or more missing
-        account_enabled = True
-        for token in tokens:
-            if (account_dict[token] is None):
-                account_enabled = False
-        if (account_enabled is False):
-            log_msg = ("  eventID {} - '{}' account is"
-                       " disabled in .ini file")
-            log_msg = log_msg.format(edict['id'], account_id)
-            logger.info(log_msg)
-            continue
-                
-        # check the account's magnitude threshhold against that of the event
-        magthresh = account_dict['magthresh']
-        if float(edict['mag']) < float(magthresh):
-            log_msg = ("  eventID {} - '{}' account: Ignoring because"
-                       " magnitude {} is less than {} threshold")
-            log_msg = log_msg.format(edict['id'],
-                                     account_id,
-                                     edict['mag'],
-                                     magthresh)
-            logger.info(log_msg)
-            continue   # go to next account_id
-
-        # Check that event is okay to be tweeted
-        (result, msg) = check_event(edict, account_id)
-
-        # the msg should be logged
-        log_msg = "  eventID {} - '{}' account: " + msg
-        log_msg = log_msg.format(edict['id'], account_id)
-        logger.info(log_msg)
-
-        # if result is false, don't tweet
-        if (result is False):
-            continue
-
-        # The event needs to be tweeted, so make sure the dynamic
-        # event dictionary entries (fe_region and shorturl) are
-        # present.  If the value of the dict entry is None, it's needed.
-        # If the value of the dict entry is None, it's needed.  If not,
-        # then it's already been obtained
-        # F/E region
-        if edict['fe_region'] is None:
-            log_msg = ("  eventID {} - '{}' account: Need F/E region")
-            log_msg = log_msg.format(edict['id'], account_id)
-            logger.info(log_msg)
-            geoserve_url = config.get('SETUP', 'geoserve_urltemplate')
-            edict['fe_region'] = get_region_name(float(edict['lat']),
-                                                 float(edict['lon']),
-                                                 geoserve_url,
-                                                 logger)
-            log_msg = ("  eventID {} - '{}' account: Obtained F/E region")
-            log_msg = log_msg.format(edict['id'], account_id)
-            logger.info(log_msg)
-        else:
-            log_msg = ("  eventID {} - '{}' account: Re-using F/E region")
-            log_msg = log_msg.format(edict['id'], account_id)
-            logger.info(log_msg)
-
-        # GoUSA short url (if possible)
-        if edict['shorturl'] is None:
-            log_msg = ("  eventID {} - '{}' account: Need short URL for event")
-            log_msg = log_msg.format(edict['id'], account_id)
-            logger.info(log_msg)
-            edict['shorturl'] = get_short_url(edict)
-            log_msg = ("  eventID {} - '{}' account: Obtained event URL")
-            log_msg = log_msg.format(edict['id'], account_id)
-            logger.info(log_msg)
-        else:
-            log_msg = ("  eventID {} - '{}' account: Re-using short URL")
-            log_msg = log_msg.format(edict['id'], account_id)
-            logger.info(log_msg)
-
-        # send the tweet from the current account
-        res, msg, nseconds, tweet = tweet_event(edict, account_id)
-        if not res:
-            log_msg = ("  eventID {} - '{}' account: Failed to Tweet message"
-                       " in {} seconds with message '{}'")
-            log_msg = log_msg.format(edict['id'], account_id, str(nseconds), msg)
-            logger.error(log_msg)
-        else:
-            log_msg = ("  eventID {} - '{}' account: The following Tweet"
-                       " took {} seconds to send:")
-            log_msg = log_msg.format(edict['id'], account_id, str(nseconds))
-            logger.info(log_msg)
-            logger.info('  ' + tweet)
-
-        # see if the event needs to be added to the db
-        if event_added is False:
-            event_added = True
-            add_event_to_db(edict)
-
-    return
-
-
-####################
-def validate_config_file():
-    """
-    Purpose: Makes sure config file contains all required
-             sections and key/value pairs.  Checking once - near
-             the start of the program - to ensure all config file
-             entries are there simplifies all the other code
-
-    Arguments: None
-
-    Returns: None
-    """
-    # Existence of the [SETUP] section has already been determined during
-    # the start of logging.  Make sure the other required sections are
-    # present
-    required_sections = ['TWITTER', 'DATABASE', 'GOUSA']
+    # define the sections required and make sure they are present
+    required_sections = ['SETUP', 'TWITTER', 'DATABASE']
     for section in required_sections:
         if not config.has_section(section):
             log_msg = "Config file '{}' is missing the '{}' section"
             log_msg = log_msg.format(configfile, section)
-            logger.error(log_msg)
+            print(log_msg)
             sys.exit(1)
 
+    twitter_keys = ['apikey', 'apisecret', 'accesstoken', 'accesstoken_secret']
+
+
     # Validate the [SETUP] section to make sure all required key/value
-    # pairs are present.
+    # pairs are present.  Load the setup_dict along the way
     section = 'SETUP'
-    setup_keys = ['timethresh', 'tooclosedistance', 'toooldtime',
-                  'ignoreregions', 'long_urltemplate',
-                  'logging_level', 'logfile', 'geoserve_urltemplate']
+    setup_keys = ['logging_level', 'logfile_name', 'log_directory']
     missing = []
     for key in setup_keys:
         if not config.has_option(section, key):
             missing.append(key)
-    if len(missing):
-        log_msg = ("[{}] section of Config file '{}' "
-                   "is missing option(s): {}")
-        log_msg = log_msg.format(section, configfile, ', '.join(missing))
-        logger.error(log_msg)
-        sys.exit(1)
+        else:
+            setup_dict[key] = config.get(section, key)
 
-    # Validate the [GOUSA] section
-    section = 'GOUSA'
-    gousa_keys = ['gousa_username', 'gousa_apikey', 'gousa_urltemplate']
-    missing = []
-    for key in gousa_keys:
-        if not config.has_option(section, key):
-            missing.append(key)
     if len(missing):
         log_msg = ("[{}] section of Config file '{}' "
                    "is missing option(s): {}")
         log_msg = log_msg.format(section, configfile, ', '.join(missing))
-        logger.error(log_msg)
+        print(log_msg)
         sys.exit(1)
 
     # Validate the [DATABASE] section
@@ -625,43 +409,127 @@ def validate_config_file():
     for key in db_keys:
         if not config.has_option(section, key):
             missing.append(key)
+        else:
+            db_dict[key] = config.get(section, key)
+
     if len(missing):
         log_msg = ("[{}] section of Config file '{}' "
                    "is missing option(s): {}")
         log_msg = log_msg.format(section, configfile, ', '.join(missing))
-        logger.error(log_msg)
+        print(log_msg)
         sys.exit(1)
 
-    return
+    # Validate the mandatory parts of the [TWITTER] section
+    section = 'TWITTER'
+    twitter_keys = ['apikey', 'apisecret', 'accesstoken', 'accesstoken_secret']
+    missing = []
+    for key in twitter_keys:
+        if not config.has_option(section, key):
+            missing.append(key)
+        else:
+            twitter_dict[key] = config.get(section, key)
+
+    if len(missing):
+        log_msg = ("[{}] section of Config file '{}' "
+                   "is missing option(s): {}")
+        log_msg = log_msg.format(section, configfile, ', '.join(missing))
+        print(log_msg)
+        sys.exit(1)
+
+    # Validate the [TWITTER] section for optional key/value pairs
+    section = 'TWITTER'
+    key = 'filter_RT_out'
+    if not config.has_option(section, key):
+        twitter_dict[key] = False
+    else:
+        twitter_dict[key] = True
+
+    section = 'TWITTER'
+    key = 'filter_terms_out'
+    if not config.has_option(section, key):
+        twitter_dict[key] = None
+    else:
+        twitter_dict[key] = config.get(section, key)
+
+    section = 'TWITTER'
+    key = 'foreign_location_translations'
+    if not config.has_option(section, key):
+        twitter_dict[key] = None
+    else:
+        twitter_dict[key] = config.get(section, key)
+
+    return setup_dict, db_dict, twitter_dict
 
 
 ####################
-def start_logging():
+def log_section_dictionary_info():
     """
-    Purpose: Handles all action needed to initiate logging
+    Purpose: writes content of config file section dictionarie
+             to the log file.  
+             Note: does not show the database password
 
     Arguments: None
 
     Returns: None
     """
-    # if the [SETUP] section of the config file is missing, can't start logging
-    if not config.has_section('SETUP'):
-        log_msg = "Config file '{}' is missing the 'SETUP' section"
-        log_msg = log_msg.format(configfile)
-        print(log_msg)
-        sys.exit(1)
 
-    # [SETUP] must define logging_level and logfile in order to start logging
-    logging_level = config.get('SETUP', 'logging_level', fallback = None)
-    logfile = config.get('SETUP', 'logfile', fallback = None)
-    if (logging_level is None or logfile is None):
-        log_msg = ("Config file '{}' is missing logging_level and/or "
-                   "logfile in [SETUP] section")
-        log_msg = log_msg.format(configfile)
-        print(log_msg)
-        sys.exit(1)
+    # log the key/value pairs in the data dictionaries associated
+    # with the config file
+    log_msg = "Parameters in config file '{}'"
+    log_msg = log_msg.format(configfile)
+    logger.info(log_msg)
+    section = "SETUP"
+    log_msg = "  {} section:"
+    log_msg = log_msg.format(section)
+    logger.info(log_msg)
+    for key in setup_dict:
+        if (setup_dict[key] is None):
+            log_msg = "    {} = None"
+            log_msg = log_msg.format(key)
+        else:
+            log_msg = "    {} = {}"
+            log_msg = log_msg.format(key, setup_dict[key])
+        logger.info(log_msg)
 
-    # Set up for logging - create dictionary to pass params to create_logger()
+    section = "DATABASE"
+    log_msg = "  {} section:"
+    log_msg = log_msg.format(section)
+    logger.info(log_msg)
+    for key in db_dict:
+        if (key == 'password' ):
+            log_msg = "    {} = **********"
+            log_msg = log_msg.format(key)
+        else:
+            log_msg = "    {} = {}"
+            log_msg = log_msg.format(key, db_dict[key])
+        logger.info(log_msg)
+
+    section = "TWITTER"
+    log_msg = "  {} section:"
+    log_msg = log_msg.format(section)
+    logger.info(log_msg)
+    for key in twitter_dict:
+        if (twitter_dict[key] is None):
+            log_msg = "    {} = None"
+            log_msg = log_msg.format(key)
+        else:
+            log_msg = "    {} = {}"
+            log_msg = log_msg.format(key, twitter_dict[key])
+        logger.info(log_msg)
+
+    return
+
+####################
+def start_logging(home_dir, setup_dict):    
+    """
+    Purpose: Handles all action needed to initiate logging
+
+    Arguments: The setup dictionary created in validate_config_file()
+
+    Returns: handle to the logger
+    """
+
+    # create dictionary to pass params to create_logger()
     # Instruct logging module when to back up logfile and create empty new one
     # Logfile will be archived once a week on Sunday, and only 8 will be kept
     # at a time.
@@ -670,8 +538,10 @@ def start_logging():
     logdict['bkup_interval'] = 1
     logdict['bkup_count'] = 8
     logdict['bkup_suffix'] = '%Y-%m-%d_%H:%M:%S'
-    logdict['homedir'] = homedir
-    logdict['config'] = config
+    logdict['homedir'] = home_dir
+    logdict['logfile_name'] = setup_dict['logfile_name']
+    logdict['logging_level'] = setup_dict['logging_level']
+    logdict['log_directory'] = setup_dict['log_directory']
 
     # Create logfile
     logger = create_logger(logdict)
@@ -680,221 +550,40 @@ def start_logging():
 
 
 ####################
-def close_all():
+def close_all(conn, cur):
     """
     Purpose: Close database connections and logfile handlers.
 
-    Arguments: None
+    Arguments: connection and cursor objects
 
     Returns: None
     """
     # Close database connections
     cur.close()
     conn.close()
-
-
-####################
-def validate_command_line():
-    """
-    Purpose:  Validate the command line
-
-    Notes:
-      - the production environment for this program
-        has PDL invoking it, so output to stderr doesn't
-        make it to the log file.  That means that argparse
-        can't use 'required=True' to identify required
-        options.  As a result, the args have to be manually
-        checked to make sure they are all there
-      - sometimes PDL calls with no value (or none) for
-        an option.  So, the values have to be manually
-        checked.
-      -  The command line invoked by PDL is non-standard.
-         For multi-work args, the standard form is
-         --option "word word ..." - but PDL would use
-        "--option word word ...".
-        To further complicate things, sometimes PDL wraps the
-        option in double-quotes and sometimes not. As a
-        result, the value of --preferred-event-type does
-        not get loaded (bug in argparse).  As a result,
-        the value has to be obtained from sys.argv
-
-    Arguments:  None
-
-    Returns:   None
-    """
-    # 1st check is to see if preferredID is there (can't
-    # do much without it
-    if 'preferredID' not in options:
-        log_msg = "Command line --preferred-eventid not present"
-        logger.error(log_msg)
-        log_msg = "command line: " + str(sys.argv)
-        logger.info(log_msg)
-        sys.exit(1)
-
-    # the key for preferredID may be there, but can't do much
-    # if the value is None/null
-    if options['preferredID'] is None or options['preferredID'] == 'null':
-        log_msg = "Command line --preferred-eventid has no value"
-        logger.error(log_msg)
-        sys.exit(1)
-
-    # argparse can't handle the PDL command line.  It does
-    # find the option and register the key in options,
-    # but it can't get the value.  Work-around is to get it
-    # from argv, make sure it is defined, and clean it up
-    # if the eventType is more than one word, the 2nd word
-    # will be the next entry in argv
-    eqtype_search_key = '--property-event-type'
-    got_volcanic_eventType = False
-    for item in sys.argv:
-        if got_volcanic_eventType is True:
-            # item should contain the 2nd word of the volcanic
-            # event, (e.g. eruption, explosion)
-            item = item.replace('"','')
-            options['eventType'] = options['eventType'] + ' ' + item
-            break
-        if (eqtype_search_key in item):
-            # item is the argv entry for eventType
-            # Parse the key/value pair and clean up the value
-            (key, value) = item.split("=")
-            value = value.replace('"', '')
-            value = value.strip(' ')
-            options['eventType'] = value
-            # make sure eventType has a real value
-            if options['eventType'] is None or options['eventType'] == 'null':
-                log_msg = "Command line --eventType has no value"
-                logger.error(log_msg)
-                log_msg = "command line: " + str(sys.argv)
-                logger.info(log_msg)
-                sys.exit(1)
-            # if the value is 'volcanic' the type
-            # is in the next argv entry - flag that
-            # so it can be handled on the next iteration
-            if options['eventType'] == 'volcanic':
-                got_volcanic_eventType = True
-                options['eventType'] = 'Volcanic'
-
-    # eventType of earthquake looks better as Earthquake
-    if options['eventType'] == 'earthquake':
-        options['eventType'] = 'Earthquake'
-
-    # manually check to make sure all required args have corresponding
-    # keys/values in options
-    required_keys = ['source', 'preferredLatitude', 'preferredLongitude',
-                     'preferredMagnitude', 'action', 'code',
-                     'preferredEventTime', 'status', 'preferredDepth']
-    for key in required_keys:
-        if key not in options:
-            log_msg = ("eventID {} - command line arg '{}' not present"
-                       " cannot process")
-            log_msg = log_msg.format(options['preferredID'].lower(), key)
-            logger.error(log_msg)
-            sys.exit(1)
-        if options[key] is None or options[key] == 'null':
-            log_msg = ("Command line argument {} = {}"
-                       " cannot process")
-            log_msg = log_msg.format(key, options[key])
-            logger.error(log_msg)
-            sys.exit(1)
-
-    # inspect the status option and skip everything except UPDATE
-    if options['status'] != 'UPDATE':
-        log_msg = "  eventID {} : status of {} is not UPDATE, skipping"
-        log_msg = log_msg.format(options['preferredID'].lower(),
-                                 options['status'])
-        logger.info(log_msg)
-        sys.exit(0)
-
     return
+
 
 ####################
 ####################
 if __name__ == '__main__':
 
-    parser = ArgumentParser(prog='PDL2Twitter', usage='%(prog)s [options]')
+    # since lots of stuff (tweet text, some keywords) are in foreign
+    # languages, print() will fail with unicodeEncodeError and crash
+    # the program.  The fix is to set the PYTHONIOENCODING environment
+    # variable to utf8 - do that here
+    os.environ['PYTHONIOENCODING'] = 'utf8'
 
-    # Product Indexer command line API options
-    parser.add_argument("--directory", dest="directory", type=str,
-                      help="""Optional. <directory> is a path to a directory that contains product contents. Any directory
-                      hierarchy within <directory> is preserved.""", metavar="DIRECTORY")
-    
-    parser.add_argument("--type", dest="type", type=str,
-                      help="""Product TYPE. A short identifier that is shared by all sources of a type of product.
-                      Examples include origin, shakemap, pager, etc. """, metavar="TYPE")
-    
-    parser.add_argument("--code", dest="code", type=str,
-                      help="""Event CODE: 2 character source code plus 8 character network event code.
-                      Examples include us2009abcd and ci12345678""", metavar="CODE")
-    
-    parser.add_argument("--source", dest="source", type=str,
-                      help="""Network SOURCE that generated this product, as a two character network code.
-                      Examples include us, nc, and ci.""", metavar="SOURCE")
-    
-    parser.add_argument("--updateTime", dest="updateTime", type=str,
-                      help="""Optional. Default is now. When this version of source+type+code was updated.
-                      An example is 2010-01-14T14:11:28.691-07:00.""", metavar="UPDATETIME")
-    
-    parser.add_argument("--status", dest="status", type=str,
-                      help="""Optional. Default is UPDATE. Product generators may use any status without spaces.
-                      However, the status must be used consistently for all products of that type.
-                      Examples include UPDATE, and DELETE.""", metavar="STATUS")
-    
-    parser.add_argument("--trackerURL", dest="trackerURL", type=str,
-                      help="A location where tracking updates are sent.", metavar="TRACKERURL")
-
-    parser.add_argument("--action", dest="action", type=str,
-                      help="""ACTION is one of: EVENT_ADDED,EVENT_SPLIT,EVENT_UPDATED,EVENT_DELETED,EVENT_MERGED,EVENT_ARCHIVED
-                      PRODUCT_ADDED,PRODUCT_UPDATED,PRODUCT_DELETED,PRODUCT_ARCHIVED""", metavar="ACTION")
-    
-    parser.add_argument("--preferred-eventid", dest="preferredID", type=str,
-                      help="""The full (source+code) preferred event ID for this event.""", metavar="PREFERREDID")
-    
-    parser.add_argument("--eventids", dest="eventIDList", type=str,
-                      help="""All of the associated event IDs for this event.""", metavar="EVENTIDS")
-    
-    parser.add_argument("--preferred-magnitude", dest="preferredMagnitude", type=str,
-                      help="""The preferred magnitude for this event.""", metavar="PREFERREDMAG")
-    
-    parser.add_argument("--preferred-latitude", dest="preferredLatitude", type=str,
-                      help="""The preferred latitude for this event.""", metavar="PREFERREDLAT")
-    
-    parser.add_argument("--preferred-longitude", dest="preferredLongitude", type=str,
-                      help="""The preferred longitude for this event.""", metavar="PREFERREDLON")
-    
-    parser.add_argument("--preferred-depth", dest="preferredDepth", type=str,
-                      help="""The preferred depth for this event.""", metavar="PREFERREDDEPTH")
-    
-    parser.add_argument("--preferred-eventtime", dest="preferredEventTime", type=str,
-                      help="""The preferred event time (2010-01-14T14:11:28.691Z).""", metavar="PREFERREDDEPTH")
-
-    # PROGRAMMING NOTE: PDL calls this program with a very unconventional
-    # command line.  Some options are completely wrapped in double quotes 
-    # (e.g. "--key=value").  The result is that argparse succeeds in finding
-    # the --property-event-type option, but can't establish the value.
-    # The workaround is to get the eventType from argv (a bit farther down
-    # in the code)
-    parser.add_argument("--property-event-type", dest="eventType", type=str,
-                      help="""The event type.""", metavar="EVENTTYPE")
-
-    # Filter out any options that are not in the above list
-    # Get the list of defined options
-    options = {}
-    validargs, invalidargs = parser.parse_known_args()
-    options = vars(validargs)
-
-    # Print help menu and exit if no options are defined
-    foundone = False
-    for argvalue in options.values():
-        if argvalue != None:
-             foundone = True
-             break
-    if not foundone:
-        parser.print_help()
-        sys.exit(0)
+    # handle command line - the only option is --help
+    program_name = 'Twitter2Pg'
+    description = 'Reads Twitter streaming api and puts tweets into database'
+    parser = ArgumentParser(prog=program_name, usage=program_name + ' [--help]',
+                            description=description)
+    parser.parse_args()
 
     # Create file spec for the working directory and open the config file
     homedir = os.path.dirname(os.path.abspath(__file__))
-    configfile = os.path.join(homedir, 'PDL2Twitter.ini')
+    configfile = os.path.join(homedir, program_name + '.ini')
     if not os.path.isfile(configfile):
         log_msg = "Config file '{}' does not exist"
         log_msg = log_msg.format(configfile)
@@ -903,41 +592,22 @@ if __name__ == '__main__':
     config = configparser.ConfigParser()
     config.read_file(open(configfile))
 
-    # initiate logging
-    logger = start_logging()
+    # validate the config file (make sure all sections and required
+    # key/value pairs are present) - also, load the section dictionaries
+    setup_dict, db_dict, twitter_dict = validate_config_file(config)
 
-    # put a separator line (dashes) in the log file.
-    # This is IMPORTANT as it should always succeed, and crashes can be
-    # detected (one or more consecutive lines containing dashes
-    # implies crash)
+    # initiate logging
+    logger = start_logging(homedir, setup_dict)
+
+    # log a separator line (dashes).  This is IMPORTANT as one or 
+    # more consecutive lines indicate a crash occurred
     log_msg = '----------'
     logger.info(log_msg)
 
-    # validate the command line
-    validate_command_line()
-    
-    # log start of program
-    log_msg = 'eventID {} - PDL2Twitter starting'
-    log_msg = log_msg.format(options['preferredID'].lower())
-    logger.info(log_msg)
+    # log info from the config file section dictionaries
+    log_section_dictionary_info()
 
-    # validate the config file (make sure all sections and required
-    # key/value pairs are present)
-    validate_config_file()
-
-    # log the hacked value for the eventType
-    log_msg = "  eventID {} - eventType = {}"
-    log_msg = log_msg.format(options['preferredID'], options['eventType'])
-    logger.info(log_msg)
-
-    # Get DB connection info from config file, making sure all params are there
-    # and store values in a dict
-    db_dict = {}
-    db_keys = ['port', 'user', 'name', 'password', 'ip']
-    for key in db_keys:
-        db_dict[key] = config.get('DATABASE', key)
-
-    # Try to connect to database
+    # Connect to database
     try:
         conn = psycopg2.connect(dbname = db_dict['name'],
                                 user = db_dict['user'],
@@ -950,24 +620,88 @@ if __name__ == '__main__':
         log_msg = 'Error connecting to database'
         logger.error(log_msg)
         sys.exit(1)
-    
-    # Variables used later on
-    utcnow = datetime.utcnow()
-    eventdatetime = datetime.strptime(options['preferredEventTime'], '%Y-%m-%dT%H:%M:%S.%fZ')
 
-    # create the event dictionary
-    eventdict = create_event_dict()
-
-    # process the event
-    call_tweeter(eventdict)
-
-    # log termination of program
-    log_msg = 'eventID {} - PDL2Twitter exiting'
-    log_msg = log_msg.format(options['preferredID'].lower())
+    # log start of program and db connection
+    log_msg = '{} starting'
+    log_msg = log_msg.format(program_name)
+    logger.info(log_msg)
+    log_msg = "Connected to the '{}' DB as the '{}' user"
+    log_msg = log_msg.format(db_dict['name'], db_dict['user'])
     logger.info(log_msg)
 
+    # setup filter
+    filter_list = []
+    try:
+        cur.execute("select title from keyword")
+        rows = cur.fetchall()
+        filter = ""
+        for row in rows:
+            filter_list.append(row[0])
+            if (filter == ""):
+                filter = row[0]
+            else:
+                filter = filter + ', ' + row[0]
+        cur.close
+    except (Exception, psycopg2.DatabaseError) as error:
+        print(error)
+ 
+    # main processing loop
+    should_run = True
+    retry_count = 0
+    max_retries = 5
+    while should_run:
+        try:
+            if (retry_count > 0):
+                log_msg = 'Re-start attempt {}'
+                log_msg = log_msg.format(retry_count)
+                logger.warning(log_msg)
+            # setup authentication
+            auth = tweepy.OAuthHandler(twitter_dict['apikey'], twitter_dict['apisecret'])
+            auth.set_access_token(twitter_dict['accesstoken'],
+                                  twitter_dict['accesstoken_secret'])
+            log_msg = 'Authenticated'
+            logger.info(log_msg)
+            print(log_msg)
+            # create the stream and set search filter
+            twitterStream = tweepy.Stream(auth, listener())
+            log_msg = 'created stream, setting filter'
+            logger.info(log_msg)
+            print(log_msg)   
+            twitterStream.filter(track=[filter])
+        except KeyboardInterrupt:
+            log_line = 'Keyboard interrupt - exiting'
+            print(log_line)
+            break
+        except:
+            # probably got a disconnect
+            print("Unexpected tweepy error:", sys.exc_info()[0])
+            # clean up
+            log_msg = 'Destroy stream object'
+            logger.error(log_msg)
+            twitterStream.disconnect()
+            del twitterStream
+            # keep trying until retry count exhausted
+            retry_count = retry_count + 1
+            if (retry_count > max_retries):
+                log_msg = 'retry_count exhausted, exiting'
+                logger.error(log_msg)
+                print(log_msg)   
+                should_run = False
+            else:
+                log_msg = 'Will try to restart'
+                logger.error(log_msg)
+
+
+    ###########################
     # close db connection
-    close_all()
+    close_all(conn, cur)
+    log_msg = 'DB connection closed'
+    logger.info(log_msg)
+
+    # log termination of program
+    log_msg = '{} exiting'
+    log_msg = log_msg.format(program_name)
+    logger.info(log_msg)
 
     # exit with success
     sys.exit(0)
