@@ -1,25 +1,9 @@
-Tweet Earthquake Detector source code repository
+Tweet Earthquake Detector (TED) source code repository
 
 
-Install Notes
-1) if miniconda is not already installed then first do:
+This repository contains a combination of development and production software.
 
-  curl https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh -o Miniconda3-latest-Linux-x86_64.sh
-  bash Miniconda3-latest-Linux-x86_64.sh (follow prompts)
-  source .bashrc
-  conda config --add channels conda-forge
-  conda install packages as needed
+The 'prototype' directory contains several applications in various stages of development and exists to maintain a historical timeline of general TED software development efforts.
 
-2) set up for SSL (may have to happen before step 1) - instructions at https://gitlab.cr.usgs.gov/mhearne/install-ssl
-
-3) install this project (ted trigger code)
-
-    git clone <thisProject>
-    cd ted
-    ./install.sh
-
-4) add a line to .bashrc in your home directory which will automatically activate ted conda environment:
-
-    source activate ted
-    
+The 'PDL2Twitter' directory contains a production-grade application used to send Earthquake Notification tweets to Twitter.  It supports up to four (4) Twitter accounts, each with its own magnitude threshold for triggering.
     
