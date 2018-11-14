@@ -12,7 +12,7 @@ NAME="Twitter2Pg"
 LANG="python"
 
 # command managed by init script, this must be unique on the system because this script uses PS.
-COMMAND="$LANG /home/ted/Twitter2Pg/Twitter2Pg"
+COMMAND="$LANG ~/Twitter2Pg/Twitter2Pg"
 
 
 ##
@@ -88,7 +88,7 @@ start() {
 
 		##run command
 		pushd $WORKDIR > /dev/null
-		nohup $COMMAND >> /home/ted/Twitter2Pg/Twitter2Pg_stdout.log 2>&1 &
+		nohup $COMMAND 2>&1 &
 		popd > /dev/null
 
 		##wait a second and see if is running
