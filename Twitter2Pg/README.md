@@ -102,4 +102,4 @@ Twitter2Pg requires an authorized Twitter developer account with the following:
   e. optional: edit the [TWITTER] section to modify values for other keys in this seciton.  See the comments in the configuration file for more details
 
 # Running Twitter2Pg
-1.  Use the checkTwitter2Pg.sh script with the start option.  It is recommended to put a call to this script with the restart option in the crontab running every 5 minutes.
+1.  Edit the checkTwitter2Pg.sh script to change the COMMAND assignment to reflect the full path for the application, then run with checkTwitter2Pg.sh the start option.  It is recommended to put a call to this script with the restart option in the crontab running every 5 minutes.
