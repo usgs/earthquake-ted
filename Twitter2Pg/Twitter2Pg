@@ -1,0 +1,714 @@
+#!/usr/bin/env python
+
+import sys
+import os.path
+import time
+from argparse import ArgumentParser
+import configparser
+import codecs
+import logging.handlers
+import psycopg2
+import json
+import tweepy
+#from tweepy import Stream
+#from tweepy import OAuthHandler
+#from tweepy.streaming import StreamListener
+
+# Local imports 
+from Twitter2Pg_funcs import create_logger
+
+"""
+Twitter2Pg - An application for taking filtered tweets from
+                a stream and inserting them into a posgres database
+"""
+
+#############################################################
+# streamlistener class
+class listener(tweepy.StreamListener):
+    def on_data(self, data):
+        try:
+            tweet = json.loads(data) # load it as Python dict
+            process_tweet(tweet)
+        except:
+            print('get_tweet_stream put error')
+        return True
+
+    def on_error(self, status):
+        print(status)
+
+
+#----------------------------------
+def process_tweet(tweet):
+    """
+    Purpose: Calls load_message_dict to load the dictionary.
+             Makes sure the required fields are present.  If
+             they are, the tweet is inserted into the message table
+             if at least one filter term is present in the text, but
+             the text does not contain https
+    Arguments: tweet object
+    Returns: None
+    """
+
+    # load the message dictionary
+    message_dict = load_message_dict(tweet)
+
+    # make sure the twitter_id is present
+    if (message_dict['twitter_id'] == 'NULL'):
+        log_msg = 'tweet has no id_str - discarding'
+        logger.info(log_msg)
+        return
+
+    # make sure the other non-null columns are present
+    # since dollar signs are removed from text, make sure there's
+    # still something there
+    if (message_dict['text'] == 'NULL' or message_dict['text'] == '$$$$'):
+        log_msg = ('tweet {} missing text  - discarding')
+        log_msg = log_msg.format(message_dict['twitter_id'])
+        logger.info(log_msg)
+        return
+
+    if (message_dict['twitter_date'] == 'NULL'):
+        log_msg = ('tweet {} missing twitter_date  - discarding')
+        log_msg = log_msg.format(message_dict['twitter_id'])
+        logger.info(log_msg)
+        return
+
+    if (message_dict['twitter_date'] == 'NULL'):
+        log_msg = ('tweet {} missing twitter_date  - discarding')
+        log_msg = log_msg.format(message_dict['twitter_id'])
+        logger.info(log_msg)
+        return
+
+    # make sure at least one of the filter terms in in the 'text'
+    # field of the tweet.  If one is found, add the message to the DB
+    add_message = False
+    log_msg = ("reject - no filter terms in tweet")
+    for term in filter_list:
+        if term in message_dict['text']:
+            add_message = True
+            break
+
+    # if filter_RT_out is True, discard tweets starting
+    # with RT
+    if (add_message is True
+        and twitter_dict['filter_RT_out'] is True):
+            # Note: string starts with double dollar signs
+            if (message_dict['text'][2:4] == 'RT'):
+                add_message = False
+                log_msg = ("reject - tweet starts with RT")
+
+    # see if filter_terms_out is defined, and process accordingly
+    if (add_message is True
+        and twitter_dict['filter_terms_out'] is not None):
+            # make a list of the filter terms and see if the text contains
+            # any of them - if it does, discard tweet
+            term_list = twitter_dict['filter_terms_out'].split(",")
+            for term in term_list:
+                if (term.lower() in message_dict['text'].lower()):
+                    add_message = False
+                    log_msg = ("reject - tweet contains '{}'")
+                    log_msg = log_msg.format(term)
+                    break
+
+    # if, at this point, the tweet should be added, look to see if
+    # foreign_location_translations has been set in the .ini file, it
+    # contains a list of 2-character Twitter lang codes (the list may have
+    # just one entry).  The foreign_location_translations DB table should
+    # contain rows for the given lang that contain info on how to (maybe)
+    # translate the location_string into english
+    if (add_message is True 
+        and twitter_dict['foreign_location_translations'] is not None):
+        lang_list = twitter_dict['foreign_location_translations'].split(",")
+        for lang in lang_list:
+            # don't forget lang is wrapped in double $
+            msg_dict_lang = message_dict['lang'].replace('$','')
+            #print("lang: " + lang + "    msg_dict_lang: " + msg_dict_lang)
+            if (lang == msg_dict_lang):
+                # don't process if location_string is NULL
+                if (message_dict['location_string'] == 'NULL'):
+                    break  # out of for lang in lang_list
+
+                log_msg = ("Attempting foreign location translation for lang = '{}'")
+                log_msg = log_msg.format(lang)
+                logger.info(log_msg)
+           
+                #print("foreign_location_translation ENABLED for " + lang)
+                query = "SELECT english_translation, aliases, priority FROM foreign_location_translations WHERE lang = '{}' ORDER BY priority"
+                query = query.format(lang)
+                translated = False
+                try:
+                    cur.execute(query)
+                    rows = cur.fetchall()
+                    for row in rows:
+                        english_translation = row[0]
+                        alias_list = row[1].split(",")
+                        #print("\tenglish_translation: " + english_translation)
+                        for alias in alias_list:
+                            if (alias in message_dict['location_string']):
+                                translated = True
+                                break  # out of for alias in alias_list 
+                        cur.close
+                        if (translated is True):
+                            break  # break out of for row in rows...
+                except (Exception, psycopg2.DatabaseError) as error:
+                    log_msg = ("error '{}' processing cursor for"
+                               " SELECT FROM foreign_location_translations")
+                    log_msg = log_msg.format(error)
+                    logger.error(log_msg)
+                    sys.exit(1)
+
+                if (translated is True):
+                    message_dict['location_string'] = "$$" + english_translation + "$$"
+                    log_msg = ("translated foreign location_string to '{}'")
+                    log_msg = log_msg.format(english_translation)
+                    logger.info(log_msg)
+
+    if add_message:
+        add_message_to_db(message_dict)
+    else:
+        logger.info(log_msg)
+
+    return
+
+
+#----------------------
+def load_message_dict(tweet):
+    """
+    Purpose: Copies tweet fields into the message dictionary.
+             The dictionary contains all the needed message
+             table columns.
+             Sets dictionary values to NULL when appropriate,
+             removes dollar signs ($) from text, and wraps
+             wraps text fields double dollars signs ($$)
+    Arguments: tweet object
+    Returns: message dictionary
+    """
+    # clear out the dict - NOTE: all entries are strings
+    msg_dict = {}
+
+    # these are static
+    msg_dict['date_created'] = 'now()'
+    msg_dict['to_be_geo_located'] = 'True'
+
+    msg_dict['twitter_id'] = 'NULL'
+    if ('id_str' in tweet and tweet['id_str'] is not None):
+        msg_dict['twitter_id'] = tweet['id_str']
+        msg_dict['twitter_id'] = msg_dict['twitter_id'].replace('$','')
+        msg_dict['twitter_id'] = msg_dict['twitter_id']
+    else:
+        return msg_dict
+
+    # the following are all NOT NULL and have to be present in
+    # the tweet
+    msg_dict['text'] = 'NULL'
+    if ('text' in tweet and tweet['text'] is not None):
+        msg_dict['text'] = tweet['text']
+        msg_dict['text'] = msg_dict['text'].replace('$','')
+        tmpList = msg_dict['text'].split()
+        msg_dict['text'] = '$$' + msg_dict['text'] + '$$'
+    else:
+        return msg_dict
+
+    msg_dict['twitter_date'] = 'NULL'
+    if ('created_at' in tweet and tweet['created_at'] is not None):
+        msg_dict['twitter_date'] = tweet['created_at']
+    else:
+        print('tweet ' + tweet['id_str'] + ' has no created_at  - discarding')
+        return msg_dict
+
+    # any/all of the following may be NULL
+    # unravel coordinates - if present, turn them into a geometry type
+    msg_dict['location'] = 'NULL' # type = geometry
+
+    msg_dict['location_string'] = 'NULL'
+    msg_dict['location_type'] = 'NULL'
+    msg_dict['opt_location_string'] = 'NULL'
+    msg_dict['orig_location_string'] = 'NULL'
+    if ('location' in tweet['user'] and tweet['user']['location'] is not None):
+        msg_dict['location_string'] = tweet["user"]["location"]
+        msg_dict['location_string'] = '$$' + msg_dict['location_string'].replace('$','') + '$$'
+        msg_dict['opt_location_string'] =  msg_dict['location_string'].lower()
+        msg_dict['orig_location_string'] = '$$' + tweet["user"]["location"].replace('$','')  + '$$'
+        msg_dict['location_type'] = "'Location-String'"
+
+    # make sure to process this AFTER location_type is done (above)
+    if ('coordinates' in tweet and tweet['coordinates'] is not None):
+        if ('type' in tweet['coordinates']
+            and tweet['coordinates']['type'] is not None
+            and tweet['coordinates']['type'] == 'Point'):
+            lon = str(tweet['coordinates']['coordinates'][0])
+            lat = str(tweet['coordinates']['coordinates'][1])
+            temp_loc = 'st_SetSrid(st_MakePoint({}, {}), 4326)'
+            msg_dict['location'] = temp_loc.format(lon, lat)
+            if (msg_dict['location_type'] == 'NULL'):
+                msg_dict['location_type'] = "'GeoLocation'"
+
+    msg_dict['in_reply_to_message_id'] = 'NULL'
+    if ('in_reply_to_status_id_str' in tweet and tweet['in_reply_to_status_id_str'] is not None):
+        msg_dict['in_reply_to_message_id'] = tweet['in_reply_to_status_id_str']
+
+    msg_dict['lang'] = 'NULL'
+    if ('lang' in tweet['user'] and tweet['user']['lang'] is not None):
+        # if lang code is longer than expected, log and correct
+        if (len(tweet['user']['lang']) > 5):
+            log_msg = ("LANG overflow: lang = '{}'")
+            log_msg = log_msg.format(tweet['user']['lang'])
+            logger.warning(log_msg)
+            tweet['user']['lang'] = tweet['user']['lang'][0:5]
+        msg_dict['lang'] = "$$" + tweet['user']['lang'] + "$$"
+   
+    msg_dict['media_display_url'] = 'NULL'
+    msg_dict['media_type'] = 'NULL'
+    if ('media' in tweet['entities']):
+        #print('tweet[entities][media]: ' + json.dumps(tweet['entities']['media'], indent=4))
+        if ('display_url' in tweet['entities']['media'][0] and tweet['entities']['media'][0]['display_url'] is not None):
+            msg_dict['media_display_url'] = tweet['entities']['media'][0]['display_url']
+            msg_dict['media_display_url'] = msg_dict['media_display_url'].replace('$','')
+            msg_dict['media_display_url'] = '$$' + msg_dict['media_display_url'] + '$$'
+        if ('type' in tweet['entities']['media'][0] and tweet['entities']['media'][0]['type'] is not None):
+            msg_dict['media_type'] = tweet['entities']['media'][0]['type']
+            msg_dict['media_type'] = msg_dict['media_type'].replace('$','')
+            msg_dict['media_type'] = '$$' + msg_dict['media_type'] + '$$'
+
+    msg_dict['time_zone'] = 'NULL'
+    if ('time_zone' in tweet['user'] and tweet['user']['time_zone'] is not None):
+        msg_dict['time_zone'] = "$$" + tweet['user']['time_zone'] + "$$"
+
+    return msg_dict
+
+
+#----------------------
+def add_message_to_db(msg_dict):
+    """
+    Purpose: Creates an INSERT INTO query for the message
+             table using the message dictionary to get the
+             values.
+    Arguments: message dictionary
+    Returns: None
+    """
+    # create the query
+    query = ("INSERT INTO message ("
+             " date_created,"           # 1
+             " twitter_id,"             # 2
+             " twitter_date,"           # 3
+             " to_be_geo_located,"      # 4
+             " text,"                   # 5
+             " location_string,"        # 6
+             " opt_location_string,"    # 7
+             " orig_location_string,"   # 8
+             " location_type,"          # 9
+             " location,"               # 10
+             " in_reply_to_message_id," # 11
+             " lang,"                   # 12
+             " media_display_url,"      # 13
+             " media_type,"             # 14
+             " time_zone"               # 15
+             " ) VALUES ("
+             " {},"                     # 1
+             " {},"                     # 2
+             " to_timestamp('{}','Dy Mon DD HH24:MI:SS SSSS YYYY'),"   # 3
+             " {},"                     # 4
+             " {},"                     # 5
+             " {},"                     # 6
+             " {},"                     # 7
+             " {},"                     # 8
+             " {},"                     # 9
+             " {},"                     # 10
+             " {},"                     # 11
+             " {},"                     # 12
+             " {},"                     # 13
+             " {},"                     # 14
+             " {}"                      # 15
+             ") ON CONFLICT DO NOTHING")
+    query = query.format(msg_dict['date_created'],               # 1
+                         msg_dict['twitter_id'],                 # 2
+                         msg_dict['twitter_date'],               # 3
+                         msg_dict['to_be_geo_located'],          # 4
+                         msg_dict['text'],                       # 5
+                         msg_dict['location_string'],            # 6
+                         msg_dict['opt_location_string'],        # 7
+                         msg_dict['orig_location_string'],       # 8
+                         msg_dict['location_type'],              # 9
+                         msg_dict['location'],                   # 10
+                         msg_dict['in_reply_to_message_id'],     # 11
+                         msg_dict['lang'],                       # 12
+                         msg_dict['media_display_url'],          # 13
+                         msg_dict['media_type'],                 # 14
+                         msg_dict['time_zone'])                  # 15
+
+
+    # execute the query, trapping any errors
+    try:
+        cur.execute(query)
+        log_msg = ("ACCEPT {}")
+        log_msg = log_msg.format(msg_dict['twitter_id'])
+        logger.info(log_msg)
+    except Exception as e:
+        log_msg = ("Error {} inserting twitter_id = {}")
+        log_msg = log_msg.format(e, msg_dict['twitter_id'])
+        logger.error(log_msg, exc_info=True)
+        sys.exit(1)
+
+    return
+
+
+####################
+def validate_config_file(config):
+    """
+    Purpose: Process config file to ensure all sections and key/value pairs.
+             are present.  Also, initialize and load the data dictionaries
+             for each section.
+
+    Notes:   The configuration file is processed before logging starts
+             (because the SETUP section contains logging parameters).
+             Therefore, errors have to be printed to stdout (not the log
+             file)
+         
+    Arguments: handle to config file
+
+    Returns: setup_dict, db_dict, twitter_dict
+    """
+
+    # initialize the section dictionaries
+    setup_dict = {}
+    db_dict = {}
+    twitter_dict = {}
+
+    # define the sections required and make sure they are present
+    required_sections = ['SETUP', 'TWITTER', 'DATABASE']
+    for section in required_sections:
+        if not config.has_section(section):
+            log_msg = "Config file '{}' is missing the '{}' section"
+            log_msg = log_msg.format(configfile, section)
+            print(log_msg)
+            sys.exit(1)
+
+    twitter_keys = ['apikey', 'apisecret', 'accesstoken', 'accesstoken_secret']
+
+
+    # Validate the [SETUP] section to make sure all required key/value
+    # pairs are present.  Load the setup_dict along the way
+    section = 'SETUP'
+    setup_keys = ['logging_level', 'logfile_name', 'log_directory']
+    missing = []
+    for key in setup_keys:
+        if not config.has_option(section, key):
+            missing.append(key)
+        else:
+            setup_dict[key] = config.get(section, key)
+
+    if len(missing):
+        log_msg = ("[{}] section of Config file '{}' "
+                   "is missing option(s): {}")
+        log_msg = log_msg.format(section, configfile, ', '.join(missing))
+        print(log_msg)
+        sys.exit(1)
+
+    # Validate the [DATABASE] section
+    section = 'DATABASE'
+    db_keys = ['port', 'user', 'name', 'password', 'ip']
+    missing = []
+    for key in db_keys:
+        if not config.has_option(section, key):
+            missing.append(key)
+        else:
+            db_dict[key] = config.get(section, key)
+
+    if len(missing):
+        log_msg = ("[{}] section of Config file '{}' "
+                   "is missing option(s): {}")
+        log_msg = log_msg.format(section, configfile, ', '.join(missing))
+        print(log_msg)
+        sys.exit(1)
+
+    # Validate the mandatory parts of the [TWITTER] section
+    section = 'TWITTER'
+    twitter_keys = ['apikey', 'apisecret', 'accesstoken', 'accesstoken_secret']
+    missing = []
+    for key in twitter_keys:
+        if not config.has_option(section, key):
+            missing.append(key)
+        else:
+            twitter_dict[key] = config.get(section, key)
+
+    if len(missing):
+        log_msg = ("[{}] section of Config file '{}' "
+                   "is missing option(s): {}")
+        log_msg = log_msg.format(section, configfile, ', '.join(missing))
+        print(log_msg)
+        sys.exit(1)
+
+    # Validate the [TWITTER] section for optional key/value pairs
+    section = 'TWITTER'
+    key = 'filter_RT_out'
+    if not config.has_option(section, key):
+        twitter_dict[key] = False
+    else:
+        twitter_dict[key] = True
+
+    section = 'TWITTER'
+    key = 'filter_terms_out'
+    if not config.has_option(section, key):
+        twitter_dict[key] = None
+    else:
+        twitter_dict[key] = config.get(section, key)
+
+    section = 'TWITTER'
+    key = 'foreign_location_translations'
+    if not config.has_option(section, key):
+        twitter_dict[key] = None
+    else:
+        twitter_dict[key] = config.get(section, key)
+
+    return setup_dict, db_dict, twitter_dict
+
+
+####################
+def log_section_dictionary_info():
+    """
+    Purpose: writes content of config file section dictionarie
+             to the log file.  
+             Note: does not show the database password
+
+    Arguments: None
+
+    Returns: None
+    """
+
+    # log the key/value pairs in the data dictionaries associated
+    # with the config file
+    log_msg = "Parameters in config file '{}'"
+    log_msg = log_msg.format(configfile)
+    logger.info(log_msg)
+    section = "SETUP"
+    log_msg = "  {} section:"
+    log_msg = log_msg.format(section)
+    logger.info(log_msg)
+    for key in setup_dict:
+        if (setup_dict[key] is None):
+            log_msg = "    {} = None"
+            log_msg = log_msg.format(key)
+        else:
+            log_msg = "    {} = {}"
+            log_msg = log_msg.format(key, setup_dict[key])
+        logger.info(log_msg)
+
+    section = "DATABASE"
+    log_msg = "  {} section:"
+    log_msg = log_msg.format(section)
+    logger.info(log_msg)
+    for key in db_dict:
+        if (key == 'password' ):
+            log_msg = "    {} = **********"
+            log_msg = log_msg.format(key)
+        else:
+            log_msg = "    {} = {}"
+            log_msg = log_msg.format(key, db_dict[key])
+        logger.info(log_msg)
+
+    section = "TWITTER"
+    log_msg = "  {} section:"
+    log_msg = log_msg.format(section)
+    logger.info(log_msg)
+    for key in twitter_dict:
+        if (twitter_dict[key] is None):
+            log_msg = "    {} = None"
+            log_msg = log_msg.format(key)
+        else:
+            log_msg = "    {} = {}"
+            log_msg = log_msg.format(key, twitter_dict[key])
+        logger.info(log_msg)
+
+    return
+
+####################
+def start_logging(home_dir, setup_dict):    
+    """
+    Purpose: Handles all action needed to initiate logging
+
+    Arguments: The setup dictionary created in validate_config_file()
+
+    Returns: handle to the logger
+    """
+
+    # create dictionary to pass params to create_logger()
+    # Instruct logging module when to back up logfile and create empty new one
+    # Logfile will be archived once a week on Sunday, and only 8 will be kept
+    # at a time.
+    logdict = {}
+    logdict['bkup_inttype'] = 'W6' # W6 = Sunday
+    logdict['bkup_interval'] = 1
+    logdict['bkup_count'] = 8
+    logdict['bkup_suffix'] = '%Y-%m-%d_%H:%M:%S'
+    logdict['homedir'] = home_dir
+    logdict['logfile_name'] = setup_dict['logfile_name']
+    logdict['logging_level'] = setup_dict['logging_level']
+    logdict['log_directory'] = setup_dict['log_directory']
+
+    # Create logfile
+    logger = create_logger(logdict)
+
+    return logger
+
+
+####################
+def close_all(conn, cur):
+    """
+    Purpose: Close database connections and logfile handlers.
+
+    Arguments: connection and cursor objects
+
+    Returns: None
+    """
+    # Close database connections
+    cur.close()
+    conn.close()
+    return
+
+
+####################
+####################
+if __name__ == '__main__':
+
+    # since lots of stuff (tweet text, some keywords) are in foreign
+    # languages, print() will fail with unicodeEncodeError and crash
+    # the program.  The fix is to set the PYTHONIOENCODING environment
+    # variable to utf8 - do that here
+    os.environ['PYTHONIOENCODING'] = 'utf8'
+
+    # handle command line - the only option is --help
+    program_name = 'Twitter2Pg'
+    description = 'Reads Twitter streaming api and puts tweets into database'
+    parser = ArgumentParser(prog=program_name, usage=program_name + ' [--help]',
+                            description=description)
+    parser.parse_args()
+
+    # Create file spec for the working directory and open the config file
+    homedir = os.path.dirname(os.path.abspath(__file__))
+    configfile = os.path.join(homedir, program_name + '.ini')
+    if not os.path.isfile(configfile):
+        log_msg = "Config file '{}' does not exist"
+        log_msg = log_msg.format(configfile)
+        print(log_msg)
+        sys.exit(1)
+    config = configparser.ConfigParser()
+    config.read_file(open(configfile))
+
+    # validate the config file (make sure all sections and required
+    # key/value pairs are present) - also, load the section dictionaries
+    setup_dict, db_dict, twitter_dict = validate_config_file(config)
+
+    # initiate logging
+    logger = start_logging(homedir, setup_dict)
+
+    # log a separator line (dashes).  This is IMPORTANT as one or 
+    # more consecutive lines indicate a crash occurred
+    log_msg = '----------'
+    logger.info(log_msg)
+
+    # log info from the config file section dictionaries
+    log_section_dictionary_info()
+
+    # Connect to database
+    try:
+        conn = psycopg2.connect(dbname = db_dict['name'],
+                                user = db_dict['user'],
+                                port = db_dict['port'],
+                                host = db_dict['ip'],
+                                password = db_dict['password'])
+        conn.autocommit = True
+        cur = conn.cursor()
+    except psycopg2.Error as e:
+        log_msg = 'Error connecting to database'
+        logger.error(log_msg)
+        sys.exit(1)
+
+    # log start of program and db connection
+    log_msg = '{} starting'
+    log_msg = log_msg.format(program_name)
+    logger.info(log_msg)
+    log_msg = "Connected to the '{}' DB as the '{}' user"
+    log_msg = log_msg.format(db_dict['name'], db_dict['user'])
+    logger.info(log_msg)
+
+    # setup filter
+    filter_list = []
+    try:
+        cur.execute("select title from keyword")
+        rows = cur.fetchall()
+        filter = ""
+        for row in rows:
+            filter_list.append(row[0])
+            if (filter == ""):
+                filter = row[0]
+            else:
+                filter = filter + ', ' + row[0]
+        cur.close
+    except (Exception, psycopg2.DatabaseError) as error:
+        print(error)
+ 
+    # main processing loop
+    should_run = True
+    retry_count = 0
+    max_retries = 5
+    while should_run:
+        try:
+            if (retry_count > 0):
+                log_msg = 'Re-start attempt {}'
+                log_msg = log_msg.format(retry_count)
+                logger.warning(log_msg)
+            # setup authentication
+            auth = tweepy.OAuthHandler(twitter_dict['apikey'], twitter_dict['apisecret'])
+            auth.set_access_token(twitter_dict['accesstoken'],
+                                  twitter_dict['accesstoken_secret'])
+            log_msg = 'Authenticated'
+            logger.info(log_msg)
+            print(log_msg)
+            # create the stream and set search filter
+            twitterStream = tweepy.Stream(auth, listener())
+            log_msg = 'created stream, setting filter'
+            logger.info(log_msg)
+            print(log_msg)
+            # reset the retry counter
+            retry_count = 0
+            log_msg = 'retry_count set to zero'
+            logger.info(log_msg)
+            print(log_msg)
+            twitterStream.filter(track=[filter])
+        except KeyboardInterrupt:
+            log_line = 'Keyboard interrupt - exiting'
+            print(log_line)
+            break
+        except:
+            # probably got a disconnect
+            print("Unexpected tweepy error:", sys.exc_info()[0])
+            # clean up
+            log_msg = 'Destroy stream object'
+            logger.error(log_msg)
+            twitterStream.disconnect()
+            del twitterStream
+            # keep trying until retry count exhausted
+            retry_count = retry_count + 1
+            if (retry_count > max_retries):
+                log_msg = 'retry_count exhausted, exiting'
+                logger.error(log_msg)
+                print(log_msg)   
+                should_run = False
+            else:
+                log_msg = 'Will try to restart'
+                logger.error(log_msg)
+
+
+    ###########################
+    # close db connection
+    close_all(conn, cur)
+    log_msg = 'DB connection closed'
+    logger.info(log_msg)
+
+    # log termination of program
+    log_msg = '{} exiting'
+    log_msg = log_msg.format(program_name)
+    logger.info(log_msg)
+
+    # exit with success
+    sys.exit(0)
