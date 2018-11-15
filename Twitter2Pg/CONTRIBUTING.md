@@ -1,4 +1,4 @@
-Contributing to Tweet Earthquake Detector - PDL2Twitter application
+Contributing to Tweet Earthquake Detector - Twitter2Pg application
 =========================
 
 Reporting issues
