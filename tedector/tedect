@@ -1,0 +1,419 @@
+#!/usr/bin/env python
+
+"""
+tedect - An application for detecting earthquakes from databased Twitter
+         messages
+"""
+
+import sys
+import os.path
+import time
+from argparse import ArgumentParser
+import configparser
+import codecs
+import logging.handlers
+import psycopg2
+import json
+from collections import deque
+import datetime
+
+
+# Local imports 
+from tedect_log_funcs import log_section_dictionary_info, start_logging
+
+
+from tedect_config_funcs import validate_config_file
+
+from tedect_alert_funcs import alert
+
+####################
+def close_db(conn):
+    """
+    Purpose: Close database connection
+
+    Arguments: connection objects
+
+    Returns: None
+    """
+    # Close database connection
+    conn.close()
+    return
+
+
+####################
+def get_bin_count_filtered(conn, start, end, filter, max_words):
+    """
+    Purpose: Gets the row count of the message table for the date range
+            with the filter_terms and max_words constraints applied
+             (NOTE the strict inequality for the start time, which is
+              intentional - it avoids counting tweets twice)
+
+    Arguments: db connection object, bin start and end time, filter terms,
+               and max_words
+
+    Returns: string containing row count
+    """
+
+    # create a cursor object
+    my_cur = conn.cursor()
+
+    # returns number of rows from filtered query for which the number
+    # of words in text is < max_words
+    count = 0
+    query = ("select text from message" \
+             " where twitter_date > to_timestamp('" + start + "', 'YYYY-MM-DD HH24:MI:SS')::timestamp" \
+             " and twitter_date <= to_timestamp('" + end + "', 'YYYY-MM-DD HH24:MI:SS')::timestamp"    \
+             " and text !~ " + filter)
+#    print(query)
+    try:
+        my_cur.execute(query)
+    except Exception as e:
+        log_msg = ("SQL Error {} on {}")
+        log_msg = log_msg.format(e, query)
+        print(log_msg)
+        logger.error(log_msg, exc_info=True)
+        sys.exit(1)
+
+    tweets = my_cur.fetchall()
+    for row in tweets:
+#        print('text:  ' + row[0])
+        num_words = len(row[0].split(' '))
+        if (num_words < max_words):
+            count = count + 1
+
+    my_cur.close()
+    return str(count)
+
+
+####################
+def backfill_deques(conn, filtered_deque,  \
+                    bin_start_deque, deque_len, max_words, \
+                    filter_terms, lta_length, bin_length):
+    """
+    Purpose: Loads the deques as part of the initialization process
+
+    Arguments: db connection object, filtered_deque, 
+                    bin_start_deque, deque_len, max_words,
+                    filter_terms, lta_length, bin_length
+
+    Returns: start time (UTC) of the next bin to fill
+    """
+
+    # get current system time in UTC
+    time_now_utc = datetime.datetime.utcnow()
+
+    # calculate the start time of the first (oldest) bin, which
+    # is the combined number of seconds in sta_length plus lta_length
+    total_seconds = (lta_length + sta_length) * 60
+    bin_start_utc = time_now_utc - datetime.timedelta(seconds=(total_seconds))
+    bin_start_utc_str = bin_start_utc.strftime("%Y-%m-%d %H:%M:%S")
+
+    for i in range(0, deque_len):
+        bin_end_utc = bin_start_utc + datetime.timedelta(seconds=bin_length)
+        bin_end_utc_str = bin_end_utc.strftime("%Y-%m-%d %H:%M:%S")
+        filtered_count = get_bin_count_filtered(conn, bin_start_utc_str,
+                                                bin_end_utc_str, filter_terms, max_words)
+        filtered_deque.append(int(filtered_count))
+        bin_start_deque.append(bin_start_utc_str)
+        bin_start_utc = bin_end_utc
+        bin_start_utc_str = bin_start_utc.strftime("%Y-%m-%d %H:%M:%S")
+
+    return bin_end_utc
+
+
+####################
+def get_lta(filtered_deque, deque_maxlen, bin_length, lta_length):
+    """
+    Purpose: calculates the long term average
+
+    Arguments: filtered_deque, deque_maxlen, bin_length (seconds),
+               lta_length (minutes)
+
+    Returns: long term average (counts per minute)
+    """
+
+    lta = 0.0
+    num_bins = int((lta_length * 60) / bin_length)
+
+    # the lta entries start at index 0 and run for the lta_length
+    start_index = 0
+    stop_index = num_bins - 1
+   
+    lta_sum = 0.0
+    for i in range(start_index, stop_index):
+       lta_sum = lta_sum + filtered_deque[i]
+
+    lta = round(lta_sum / lta_length, 4)
+
+    return lta
+
+
+####################
+def get_sta(filtered_deque, deque_maxlen, bin_length, sta_length):
+    """
+    Purpose: calculates the short term average
+
+    Arguments: filtered_deque, deque_maxlen, bin_length (seconds),
+               sta_length (minutes)
+
+    Returns: short term average (counts per minute)
+    """
+
+    sta = 0.0
+    num_bins = int((sta_length * 60) / bin_length)
+
+    # the sta entries are at the end of the array
+    start_index = deque_maxlen - num_bins
+    stop_index = deque_maxlen - 1
+
+    sta_sum = 0.0
+    for i in range(start_index, stop_index+1):
+        sta_sum = sta_sum + filtered_deque[i]
+
+    sta = round(sta_sum / sta_length, 4)
+
+    return sta
+
+
+####################
+####################
+if __name__ == '__main__':
+
+    # when tweet text uses a foreign character set, print()
+    # can fail with unicodeEncodeError and crash the program.
+    #  The fix is to set the PYTHONIOENCODING environment variable to utf8
+    os.environ['PYTHONIOENCODING'] = 'utf8'
+
+    # handle command line - the only option is --help
+    program_name = 'tedect'
+    description = 'Twitter earthquake detection'
+    parser = ArgumentParser(prog=program_name, usage=program_name + ' [--help]',
+                            description=description)
+    parser.parse_args()
+
+    # Create file spec for the working directory and open the config file
+    homedir = os.path.dirname(os.path.abspath(__file__))
+    configfile = os.path.join(homedir, program_name + '.ini')
+    if not os.path.isfile(configfile):
+        log_msg = "Config file '{}' does not exist"
+        log_msg = log_msg.format(configfile)
+        print(log_msg)
+        sys.exit(1)
+    config = configparser.ConfigParser()
+    config.read_file(open(configfile))
+
+    # validate the config file (make sure all sections and required
+    # key/value pairs are present) and then load the section dictionaries
+    setup_dict, logging_dict, db_dict, esri_dict, mail_dict = validate_config_file(config)
+
+    # initiate logging
+    logger = start_logging(homedir, logging_dict)
+
+    # log a separator line (dashes).  This is IMPORTANT as one or 
+    # more consecutive lines indicate a crash occurred
+    log_msg = '----------'
+    logger.info(log_msg)
+
+    # log info from the config file section dictionaries
+    log_section_dictionary_info(configfile, logger, setup_dict, logging_dict, 
+                                db_dict, esri_dict, mail_dict)
+
+    # Connect to database
+    try:
+        conn = psycopg2.connect(dbname = db_dict['name'],
+                                user = db_dict['user'],
+                                port = db_dict['port'],
+                                host = db_dict['ip'],
+                                password = db_dict['password'])
+        conn.autocommit = True
+    except psycopg2.Error as e:
+        log_msg = 'Error connecting to database'
+        logger.error(log_msg)
+        sys.exit(1)
+
+    # log start of program and info about db connection
+    log_msg = '{} starting'
+    log_msg = log_msg.format(program_name)
+    logger.info(log_msg)
+    log_msg = "Connected to the '{}' DB as the '{}' user"
+    log_msg = log_msg.format(db_dict['name'], db_dict['user'])
+    logger.info(log_msg)
+
+    ################# initialize variables and data structures
+    # constants in characteristic function:  C(t) = STA / (mLTA + b)
+    m = float(setup_dict['m'])
+    b = int(setup_dict['b'])
+
+    # the bin_length in the [SETUP] section defines the number of
+    # seconds in each 'bin'.  A bin stores the number of db tweets
+    # in that interval
+    bin_length = int(setup_dict['bin_length'])
+
+    # bin_load_delay in the [SETUP] section defines the number of
+    # seconds after the bin end time to wait before loading the current
+    # bin.  Doing so eliminates the possibility of loading the bin
+    # early
+    bin_load_delay = int(setup_dict['bin_load_delay'])
+
+    # the lta_length in the [SETUP] section defines the number of
+    # minutes for calculating the long term average
+    lta_length = int(setup_dict['lta_length'])
+
+    # the sta_length in the [SETUP] section defines the number of
+    # minutes for calculating the short term average
+    sta_length = int(setup_dict['sta_length'])
+
+    # the detection_threshold in the [SETUP] section defines the
+    # value of the characteristic function at which a detection
+    # will be declared (i.e. detection is declared when
+    # C(t) > detection_threshold
+    detection_threshold = float(setup_dict['detection_threshold'])
+
+    # the filter_terms the [SETUP] section is a list of terms
+    # used to REGEXP out unwanted tweets
+    filter_terms = setup_dict['filter_terms']
+
+    # max_words in the [SETUP] section is used to ignore
+    # long tweets (with more than max_words items)
+    max_words = int(setup_dict['max_words'])
+
+    # the main data structures are double-ended queues from collections.deque (note:
+    # deque is pronounced 'deck').  They replace the arrays used in perl tedect.pl
+    # There are enough entries to cover the LTA (lta_length) plus the STA
+    # (sta_length).  The two are parallel arrays, one containing the start time of
+    # the bin and the other the row count.
+    deque_maxlen = int( ((sta_length * 60) + (lta_length * 60)) / bin_length)
+
+    # filtered_deque contains integers of the row count for each bin (time
+    # window) filtered with word_count conditional
+    filtered_deque = deque(maxlen=deque_maxlen)
+
+    # bin_start_deque contains strings of the start time for each bin
+    bin_start_deque = deque(maxlen=deque_maxlen)  # string start time of bin
+
+    # backfill the deques
+    next_bin_start_utc = backfill_deques(conn,
+                                         filtered_deque,
+                                         bin_start_deque,
+                                         deque_maxlen,
+                                         max_words,
+                                         filter_terms,
+                                         lta_length,
+                                         bin_length)
+    next_bin_start_utc_str = next_bin_start_utc.strftime("%Y-%m-%d %H:%M:%S")
+
+    # log start up info
+    log_msg = '-----------------------------------------'
+    logger.info(log_msg)
+    log_msg = 'deque initialization complete:'
+    logger.info(log_msg)
+    log_msg = '\tNext bin starts: {}'
+    log_msg = log_msg.format(next_bin_start_utc_str)
+    logger.info(log_msg)
+    log_msg = '\tfiltered_deque length: {}'
+    log_msg = log_msg.format(len(filtered_deque))
+    logger.info(log_msg)
+    log_msg = '\tbin_start_deque length: {}'
+    log_msg = log_msg.format(len(bin_start_deque))
+    logger.info(log_msg)
+
+    ###########################
+    # main control loop
+    log_msg = 'Entering infinite loop'
+    logger.info(log_msg)
+
+    keep_going = True
+    #keep_going = False
+    have_triggered = False
+    while keep_going:
+        # set the next_bin_end_utc variables
+        next_bin_end_utc = next_bin_start_utc + datetime.timedelta(seconds=bin_length)
+        next_bin_end_utc_str = next_bin_end_utc.strftime("%Y-%m-%d %H:%M:%S")
+
+        # implement delay to avoid filling current bin until 'bin_load_delay'
+        # seconds past the end time
+        time_now = datetime.datetime.utcnow()
+        delta_t = (next_bin_end_utc - time_now).total_seconds()
+        wait_time = round(delta_t) + bin_load_delay
+        if (wait_time > 0):
+            time.sleep(wait_time)
+
+        # diagnostic info (temporary)
+
+        time_now = datetime.datetime.utcnow()
+        time_now_str = time_now.strftime("%Y-%m-%d %H:%M:%S")
+        log_msg = 'systime = {}: Load bin: ({}, {}]'
+        log_msg = log_msg.format(time_now_str, next_bin_start_utc_str, next_bin_end_utc_str)
+        logger.info(log_msg)
+
+        # add another bin to the deques
+        filtered_count = get_bin_count_filtered(conn,
+                                                next_bin_start_utc_str,
+                                                next_bin_end_utc_str,
+                                                filter_terms,
+                                                max_words)
+        filtered_deque.append(int(filtered_count))
+        bin_start_deque.append(next_bin_start_utc_str)
+        next_bin_start_utc = next_bin_end_utc
+        next_bin_start_utc_str = next_bin_start_utc.strftime("%Y-%m-%d %H:%M:%S")
+
+        # if the deques are full, calculate characteristic function 
+        # C(t) = STA / (mLTA + b)
+        if len(filtered_deque) == deque_maxlen:
+            lta = get_lta(filtered_deque, deque_maxlen, bin_length, lta_length)
+            sta = get_sta(filtered_deque, deque_maxlen, bin_length, sta_length)
+            characteristic = sta / ( (m * lta) + b)
+            characteristic = round(characteristic, 4)
+
+            log_msg = 'lta: {}  sta: {}  C(t): {}\n'
+            log_msg = log_msg.format(lta, sta, characteristic)
+            logger.info(log_msg)
+
+            if characteristic > detection_threshold:
+                if have_triggered is False:
+                    print('DETECTION AT ' + bin_start_deque[-1])
+                    log_msg = 'Triggered at {}'
+                    log_msg = log_msg.format(next_bin_end_utc_str)
+                    logger.info(log_msg)
+                    alert(conn, next_bin_end_utc_str, logger,
+                          mail_dict, esri_dict, filter_terms, max_words, sta_length)
+                    have_triggered = True
+                else:
+                    log_msg = 'post-trigger recovery in effect C(t) = {}'
+                    log_msg = log_msg.format(characteristic)
+                    logger.info(log_msg)
+                    if characteristic <= 0.25:
+                        log_msg = 'reset have_triggered to False'
+                        logger.info(log_msg)
+                        have_triggered = False
+#                alert(conn, '2019-02-08 02:22:05', logger,
+#                      mail_dict, esri_dict, filter_terms, max_words, sta_length)
+#                keep_going = False
+
+# 2019-02-05 16:48:58
+        sys.stdout.flush()
+
+#        keep_going = False
+
+
+
+
+    ###########################
+    # exit 
+    log_msg = '----------'
+    logger.info(log_msg)
+
+    log_msg = 'shutting down'
+    logger.info(log_msg)
+
+    # close db connection
+    close_db(conn)
+    log_msg = 'DB connection closed'
+    logger.info(log_msg)
+
+    log_msg = '{} exiting'
+    log_msg = log_msg.format(program_name)
+    logger.info(log_msg)
+
+    # exit with success
+    sys.exit(0)
