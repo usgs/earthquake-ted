@@ -16,7 +16,6 @@ ons.  Both use the 'conda' packaging tool, which makes installation of dependenc
 
 ## ESRI geocoding web service 
 
-
 Documentation:
 https://developers.arcgis.com/rest/geocode/api-reference/overview-world-geocoding-service.htm 
 
@@ -30,7 +29,6 @@ The authentication user id and secret access token go in the tedect configuratio
 ## Twitter2Pg
 
 See https://github.com/usgs/earthquake-ted/tree/master/Twitter2Pg
-
 
 # Installation
 
@@ -57,6 +55,8 @@ See https://github.com/usgs/earthquake-ted/tree/master/Twitter2Pg
   d. required: edit the [ESRI] section to provide the values for the set of tokens for the ESRI World Geocoding Service
   e. required: edit the [MAIL] section to set the 'from', 'subject_tag' and 'detection_list' variables accoringly
 
+# Running tedect
+1.  Edit the checkTedect.sh script to change the COMMAND assignment to reflect the full path for the application, then run checkTedect.sh with the start option.  It is recommended to put a call to this script with the restart option in the crontab running every 5 minutes.
 
 
 
